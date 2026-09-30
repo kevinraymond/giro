@@ -1,0 +1,8 @@
+{
+  "name": "giro-splat-transform",
+  "private": true,
+  "description": "giro's pinned splat-transform: format conversion and GPU renders of splats",
+  "dependencies": {
+    "@playcanvas/splat-transform": "3.7.0"
+  }
+}

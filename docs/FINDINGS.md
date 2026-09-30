@@ -1,0 +1,162 @@
+# Findings
+
+Lab notes from building giro, by pipeline step. Nearly everything was measured on four AI-generated
+subjects (an adventurer, a woman in a raincoat, a knight and a scooter), with a few seeds each and
+default settings, on one machine with two RTX 4090s. Treat the numbers as notes, not benchmarks.
+
+A *seed* is one generated orbit video and everything built from it. The *hero* is the input image,
+which also gets a camera. *PSNR* is Brush's held-out PSNR on every 8th frame. It measures
+consistency with the generated video, since there is no real ground truth.
+
+## Orbit videos
+
+- The first MiniMax H3 orbit (768×1024, 124 frames, 20 steps) was a real 360° turn with a
+  plausible invented room. It took 291 s on a 4090 and peaked at about 22 GB.
+- The speed is not constant. The first ~16 and last ~35 frames barely move, so the frames step
+  trims both ends and drops near-duplicates.
+- Longer clips cost more than linearly: 1.5× the frames took 2.3× the time.
+- The same seed gives the same video, so a known-bad seed makes a reliable test fixture.
+
+Clip-length sweep, one subject, 4 seeds per setting:
+
+| Frames × steps | Pass rate | Video time | GPU min per passing seed |
+|---|---|---|---|
+| 124 × 20 | 2/4 | 293 s | 9.8 |
+| 124 × 8 | 0/4 | 138 s | – |
+| **158 × 20** (default) | 3/4 | 418 s | 9.3 |
+| 192 × 20 | 3/4 | 563 s | 12.5 |
+| 192 × 8 | 2/4 | 253 s | 8.4 |
+
+With n = 4, only 124 × 8 is clearly worse. A seed that passes at one setting can fail at another.
+
+## The quality gate
+
+Failure modes seen, and the check that caught each one:
+
+| What the video did | Caught by |
+|---|---|
+| Barely moved | Too few distinct frames |
+| Orbited ~220°, then morphed back to the front | Coverage, loop closure |
+| Swept 357° and closed the loop, with one snap in the middle | Largest jump |
+| Swung 25° out and back | Coverage, one-way motion |
+| Spun the subject like a turntable in a still room | COLMAP finds no motion (fixed by [masks](#masks)) |
+| Smooth, but COLMAP misplaced cameras facing a row of identical windows | Largest jump |
+
+- The gate matched a visual check of contact sheets on 20 of 20 videos.
+- Passing seeds sit far inside most thresholds. The tightest margin is the largest jump: passes
+  reached 18° and the nearest rejection was 35°, against a limit of 30°.
+- Reprojection error never separated good seeds from bad (0.74–0.99 px for both).
+- PSNR should only rank seeds that already passed. One rejected seed had the best PSNR in its
+  batch, because its held-out views covered only the 220° it actually orbited.
+
+## Camera poses
+
+- COLMAP took 10–50 s per seed, which is small next to a 5–7 minute video. Faster methods only
+  help if they rescue seeds that COLMAP cannot.
+- MapAnything (feedforward, Apache weights) posed 119 frames in about 16 s. Its ring was loose and
+  its focal length about 45% short, and splats trained on its raw poses were blurry (20.7 dB
+  against 24.5 dB). It fails on turntable videos.
+- Refining MapAnything's poses with COLMAP's triangulation and bundle adjustment matched COLMAP
+  (24.45 dB against 24.47 dB). On a seed with three motion-blurred frames that COLMAP could not
+  place, it placed all of them. The gate still rejected that seed, correctly, for a 32° jump. This
+  refinement is kept as an experimental fallback.
+- I also tried the SfM built into
+  [Spirula Studio](https://github.com/harry7557558/spirula-studio) (`spirula sfm auto`, with
+  giro's masks) on all 28 gated seeds. It gave the same gate verdict as COLMAP on 27 of 28, took
+  3–9 s against COLMAP's 8–31 s, and led to Brush PSNR within 0.1–0.5 dB of COLMAP's. The two
+  motion-blurred borderline seeds stayed borderline with either tool. giro stays on COLMAP, which
+  was already wired in.
+- A lower reprojection error did not predict better training results with any pose tool.
+
+## Gap fill
+
+A seed failed only because three motion-blurred frames went unplaced, leaving a 58° jump. giro
+asked the video model for just that arc (22 frames, from the last good frame before the gap to the
+first one after it) and spliced it in. The idea comes from OrbitForge's coverage-aware completion
+([arXiv:2606.24799](https://arxiv.org/abs/2606.24799)).
+
+- 3 of 3 fills passed the gate, with the largest jump down from 58° to 12–18°.
+- PSNR was 34.4–35.2 dB, against 34.9 dB without the fill. The held-out frames differ, so this
+  only shows it is no worse.
+- Renders from inside the old gap went from smeared to clean.
+- It cost about 40 s of video plus masks and poses for 20 frames. A reroll takes about 7 minutes
+  and loses the seed.
+- Name spliced frames so every tool sorts them the same way. `ls`, Python and Rust disagreed on
+  `00074_01.png` against `00075.png`.
+
+## Masks
+
+- For SAM 3.1, "main subject" missed thin held objects such as swords, and adding "held object"
+  caught them. Inverting a "wall, floor" mask pulled in the invented room's doors and seams.
+- Masking the room before COLMAP helped on every seed tested. With the room gone, a spinning
+  subject looks the same as an orbiting camera:
+  - raincoat turntable: 17 → 85 of 85 frames placed, and it passed
+  - knight turntable: 4 → 119 of 119, and it passed
+  - the row-of-windows case: largest jump from 35° to 13°, and it passed
+  - a good orbit: unchanged or slightly better
+- Masks now run before poses. They cost 2–3 GPU minutes per seed.
+- Unmasked training left halos and floor wisps. Brush's "masked" mode glowed around turntable
+  subjects. "Transparent" mode was clean apart from a thin rim, which eroding the masks by 2 px
+  removed.
+
+## Training
+
+- Brush ran 30k iterations in about 200 s on a 4090, and PSNR plateaued after about 6k. Side
+  views, where the video is least consistent, showed room bleeding into the subject. That is what
+  motivated masking and cropping.
+- I also trained one scene with
+  [Spirula Studio](https://github.com/harry7557558/spirula-studio), with the same frames and
+  split, scored by one evaluator:
+
+| Trainer | PSNR (full / subject) | Time |
+|---|---|---|
+| Brush, 425K splats | 24.7 / 20.2 dB | 267 s |
+| Spirula Studio, 200K splats | 22.8 / 18.1 dB | 177 s |
+| Spirula Studio, 425K splats | 22.8 / 18.2 dB | 193 s |
+
+Spirula Studio trained 1.4–1.7× faster, and Brush scored higher on this scene. It is one scene and
+one seed, and I did not tune Spirula Studio for generated video with a transparent background.
+giro stays on Brush, which it was built around.
+
+## Crop
+
+- The visual-hull crop keeps a Gaussian if it lands inside the subject mask in most of the views
+  that see it. On its own, that rule kept 21K Gaussians of invented room, seen by only a few
+  views.
+- Visibility is bimodal: every Gaussian was seen by either under 20% or over 95% of views.
+  Requiring at least half removed the room. The crop takes 2 s on the CPU.
+- Every passing seed of the 4 subjects was reviewed from 16 directions. All were clean, and thin
+  parts such as two swords and a scooter's mirrors survived. Exports were 85–123K Gaussians
+  (2.4–3.4 MB as SPZ).
+
+## Export and viewing
+
+- splat-transform and PlayCanvas use the PLY frame rotated 180° about Z. Spark reads the file frame
+  as-is, so the splat shows upside down. Rotating 180° about Z fixes it with the hero side facing
+  +Z. The 180°-about-X flip in common examples also looks upright, but it turns the subject away.
+- Spark 2.2 rejects SPZ v4, which is splat-transform's default, so giro passes `--spz-version 3`.
+- Height is measured between the 0.5th and 99.5th percentiles of the Gaussian centers, so thin
+  tops such as mirrors can stick out a few percent past the set height.
+
+## VR on Quest 3
+
+- I expected 400–600K splats at 72 Hz, based on Spark's guidance and native apps.
+- In a first pass in the Quest browser (Spark 2.2, 90 Hz, SH degree 3), head motion already
+  stuttered at 245K. The comfortable budget may be nearer 150K.
+- The measurement was noisy: my head was moving, and another tab may have been open. Still to try:
+  72 Hz, a lower framebuffer scale, lower SH degrees and Spark's level of detail.
+
+## Gotchas
+
+- Brush ignores `CUDA_VISIBLE_DEVICES`. Use `CUBECL_WGPU_DEFAULT_DEVICE='DiscreteGpu(1)'`.
+- Brush treats any `.ply` in the dataset folder as the initial point cloud.
+- Brush writes exports non-atomically, so a live preview must wait for the file size to settle.
+- Brush logs nothing without a TTY unless `RUST_LOG=brush_cli=info` is set.
+- COLMAP 4.x includes GLOMAP as `colmap global_mapper` and renames many options. Its mapper
+  segfaulted once at random, so giro retries crashes.
+- Two giro processes sharing a ComfyUI could kill each other's jobs. Stages now hold a file lock,
+  and only the process that started an instance may stop it.
+- `uvx ruff check --select F src tests` catches undefined names in 1 s. It would have caught a bug
+  that only surfaced at the end of a 7-minute video.
+- MapAnything's `fixed_mapping` crops, so giro uses `fixed_size`. Torch hub fetches unpinned
+  DINOv2 code on first load.

@@ -1,0 +1,19 @@
+{
+  "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors", "weight_dtype": "default"}},
+  "text_encoder": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "type": "minimax", "device": "default"}},
+  "video_vae": {"class_type": "VAELoader", "inputs": {"vae_name": "minimax_h3_video_vae_fp16.safetensors"}},
+  "hero": {"class_type": "LoadImage", "inputs": {"image": "", "upload": "image"}},
+  "condition": {"class_type": "MiniMaxH3ImageToVideo", "inputs": {
+    "clip": ["text_encoder", 0], "vae": ["video_vae", 0],
+    "prompt": "", "width": 768, "height": 1024, "length": 124,
+    "first_frame": ["hero", 0], "last_frame": ["hero", 0]}},
+  "noise": {"class_type": "RandomNoise", "inputs": {"noise_seed": 0}},
+  "guider": {"class_type": "BasicGuider", "inputs": {"model": ["unet", 0], "conditioning": ["condition", 0]}},
+  "sampler": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}},
+  "sigmas": {"class_type": "BasicScheduler", "inputs": {"model": ["unet", 0], "scheduler": "simple", "steps": 20, "denoise": 1.0}},
+  "sample": {"class_type": "SamplerCustomAdvanced", "inputs": {
+    "noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0],
+    "sigmas": ["sigmas", 0], "latent_image": ["condition", 1]}},
+  "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["video_vae", 0]}},
+  "frames": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": "giro/frame"}}
+}

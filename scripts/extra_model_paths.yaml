@@ -1,0 +1,14 @@
+# giro's vendored ComfyUI reads models from a shared store (edit base_path to yours).
+giro_models:
+  base_path: ~/models
+  diffusion_models: diffusion
+  checkpoints: checkpoints
+  text_encoders: text_encoders
+  vae: vae
+  loras: loras
+  clip_vision: clip_vision
+  sam2: sams
+
+giro_ext:
+  base_path: ../src/giro
+  custom_nodes: comfy_ext
