@@ -4,8 +4,9 @@ Runs inside vendor/depth-anything-3/.venv (torch, depth_anything_3), not giro's 
 
     python da3_poses.py OUT_DIR IMAGE... --root ATTEMPT [--size W H] [--points N] [--masks MASK...]
 
-Images are resized (never cropped) to --size, which must keep their aspect ratio, so the
-predicted intrinsics scale back to full resolution by one factor per image. Frames (every
+Images are resized (never cropped) to --size, whose sides must be multiples of 14 and whose
+aspect ratio must be within 2% of theirs; the predicted intrinsics scale back to full resolution
+per axis. Frames (every
 image but the ones under hero/) share one SIMPLE_PINHOLE camera with the median focal
 length, like COLMAP with single_camera_per_folder; the hero gets its own. With --masks,
 the 3D points (Brush's initialization) are kept only inside the subject masks, and only
@@ -65,7 +66,7 @@ def main() -> None:
     sizes = [Image.open(p).size for p in args.images]
     w_in, h_in = args.size
     for (w, h), name in zip(sizes, names):
-        if abs(w / h - w_in / h_in) > 1e-3:
+        if abs((w / h) / (w_in / h_in) - 1) > 0.02:
             raise SystemExit(f"{name} is {w}x{h}, not the aspect ratio of --size {w_in}x{h_in}")
     rgb = [np.asarray(Image.open(p).convert("RGB").resize((w_in, h_in), Image.Resampling.BICUBIC)) for p in args.images]
 
@@ -81,7 +82,7 @@ def main() -> None:
 
     hero = [n.startswith("hero/") for n in names]
     w2c = pred.extrinsics[:, :3, :4]
-    focals = [float((k[0, 0] + k[1, 1]) / 2 * w / w_in) for k, (w, h) in zip(pred.intrinsics, sizes)]
+    focals = [float((k[0, 0] * w / w_in + k[1, 1] * h / h_in) / 2) for k, (w, h) in zip(pred.intrinsics, sizes)]
     frame_f = float(np.median([f for f, h_ in zip(focals, hero) if not h_]))
 
     args.out.mkdir(parents=True, exist_ok=True)

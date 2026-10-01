@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 from scipy.spatial.transform import Rotation
 
 from giro import gpu
@@ -37,7 +38,21 @@ from giro.stages.poses import read_images_txt
 ROOT = Path(__file__).resolve().parents[3]
 DA3_PYTHON = ROOT / "vendor" / "depth-anything-3" / ".venv" / "bin" / "python"
 WORKER = ROOT / "src" / "giro" / "workers" / "da3_poses.py"
-DA3_VRAM_MB = 9_000  # DA3-BASE on ~120 images at 378x504: 8 GB peak
+DA3_VRAM_MB = 9_000  # DA3-BASE on ~120 images at 378x504: 8 GB peak (any shape: long side 504)
+
+
+def model_size(width: int, height: int, long_side: int) -> tuple[int, int]:
+    """DA3 input size for frames of this shape: both sides multiples of 14 (DA3's patch, so the
+    model resizes nothing further), the long side within 56 px of the one given, and the aspect
+    ratio as close as that allows (768x1024 -> 378x504, 1344x768 -> 448x252)."""
+    best = None
+    for long_ in range(long_side - 56, long_side + 57, 14):
+        short = max(14, round(long_ * min(width, height) / max(width, height) / 14) * 14)
+        w, h = (long_, short) if width >= height else (short, long_)
+        err = abs((w / h) / (width / height) - 1)
+        if best is None or err < best[0] - 1e-9 or (abs(err - best[0]) < 1e-9 and abs(long_ - long_side) < best[2]):
+            best = (err, (w, h), abs(long_ - long_side))
+    return best[1]
 
 
 def _centers(poses: dict[str, tuple[np.ndarray, np.ndarray]], names: list[str]) -> np.ndarray:
@@ -89,7 +104,7 @@ class PoseFallback(Stage):
     defaults = {
         "enabled": True,
         "model": "depth-anything/DA3-BASE",
-        "size": [378, 504],     # model input (3:4, sides multiples of 14): a pure resize of the frames
+        "long_side": 504,       # model input: the frames resized to this long side (sides multiples of 14)
         "min_points": 15,       # an image fewer triangulated points see keeps its feedforward pose
         "max_unrefined": 0.1,   # ... but at most this share of the images
     }
@@ -109,6 +124,8 @@ class PoseFallback(Stage):
         work.mkdir(parents=True)
         log_path = work / "fallback.log"
         images = sorted((attempt / "frames").glob("*.png")) + sorted((attempt / "hero").glob("*.png"))
+        with Image.open(images[0]) as im:
+            size = model_size(*im.size, params["long_side"])
         masks = [m for p in images if (m := attempt / "masks" / p.parent.name / p.name).exists()]
 
         def run_logged(step: str, frac: float, cmd: list[str], env: dict[str, str] | None = None) -> str:
@@ -130,7 +147,7 @@ class PoseFallback(Stage):
         ff_txt = work / "feedforward"
         run_logged("posing the frames (Depth Anything 3)", 0.0,
                    [str(DA3_PYTHON), str(WORKER), str(ff_txt), *map(str, images), "--root", str(attempt),
-                    "--size", *map(str, params["size"]), "--model", params["model"],
+                    "--size", *map(str, size), "--model", params["model"],
                     *(["--masks", *map(str, masks)] if masks else [])], env=gpu.cuda_env(device))
 
         # Start model: the feedforward poses and focal lengths, under the COLMAP database's ids.

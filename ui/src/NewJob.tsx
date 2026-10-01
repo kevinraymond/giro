@@ -12,11 +12,52 @@ interface Picked {
 
 const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
 
-// The hero is center-cropped to the video's aspect ratio (giro/hero.py); show what survives.
-function cropBox(w: number, h: number, vw: number, vh: number) {
+// Video shapes. Only 3:4 at 768x1024 has been tested end to end (docs/FINDINGS.md, "Orbit videos").
+const SHAPES: { key: string; label: string; ratio?: number }[] = [
+  { key: "3:4", label: "3:4 portrait (tested)", ratio: 3 / 4 },
+  { key: "2:3", label: "2:3 portrait", ratio: 2 / 3 },
+  { key: "9:16", label: "9:16 portrait", ratio: 9 / 16 },
+  { key: "1:1", label: "1:1 square", ratio: 1 },
+  { key: "4:3", label: "4:3 landscape", ratio: 4 / 3 },
+  { key: "3:2", label: "3:2 landscape", ratio: 3 / 2 },
+  { key: "16:9", label: "16:9 landscape", ratio: 16 / 9 },
+  { key: "image", label: "Closest to the image" },
+  { key: "custom", label: "Custom" },
+];
+// Pixel budgets: giro's tested 768x1024, and the video model's own default, 1344x768.
+const SIZES: Record<string, { label: string; px: number }> = {
+  standard: { label: "Standard, ~0.8 MP (tested)", px: 768 * 1024 },
+  large: { label: "Large, ~1 MP (the model's default)", px: 1344 * 768 },
+};
+const TESTED_PX = 768 * 1024;
+const snap32 = (v: number) => Math.min(2048, Math.max(256, Math.round(v / 32) * 32)); // the video model's grid
+const frameSize = (ratio: number, px: number): [number, number] => [snap32(Math.sqrt(px * ratio)), snap32(Math.sqrt(px / ratio))];
+const closestShape = (ratio: number) =>
+  SHAPES.filter((s) => s.ratio).reduce((a, b) => (Math.abs(Math.log(ratio / b.ratio!)) < Math.abs(Math.log(ratio / a.ratio!)) ? b : a));
+
+// The largest box of the video's aspect ratio that fits the image (giro/hero.py), as fractions of it.
+function coverBox(w: number, h: number, vw: number, vh: number) {
   const target = vw / vh;
-  const [cw, ch] = w / h > target ? [Math.round(h * target), h] : [w, Math.round(w / target)];
-  return { left: (w - cw) / 2 / w, top: (h - ch) / 2 / h, width: cw / w, height: ch / h, removed: 1 - (cw * ch) / (w * h) };
+  const [cw, ch] = w / h > target ? [h * target, h] : [w, w / target];
+  return { width: cw / w, height: ch / h };
+}
+
+interface View {
+  zoom: number; // 1: the largest box; 2: half its width
+  cx: number;   // center of the kept region, as fractions of the image
+  cy: number;
+}
+const CENTERED: View = { zoom: 1, cx: 0.5, cy: 0.5 };
+const MAX_ZOOM = 4;
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+// The region the hero keeps: the cover box shrunk by the zoom, moved to the view's center, kept inside the image.
+function cropRegion(base: { width: number; height: number }, v: View) {
+  const width = base.width / v.zoom;
+  const height = base.height / v.zoom;
+  const left = clamp(v.cx - width / 2, 0, 1 - width);
+  const top = clamp(v.cy - height / 2, 0, 1 - height);
+  return { left, top, width, height, removed: 1 - width * height };
 }
 
 export function NewJob() {
@@ -31,6 +72,12 @@ export function NewJob() {
   const [length, setLength] = useState("");
   const [steps, setSteps] = useState("");
   const [seeds, setSeeds] = useState("");
+  const [shape, setShape] = useState("3:4");
+  const [size, setSize] = useState("standard");
+  const [customW, setCustomW] = useState("768");
+  const [customH, setCustomH] = useState("1024");
+  const [view, setView] = useState<View>(CENTERED);
+  const preview = useRef<HTMLDivElement>(null);
   const [editOn, setEditOn] = useState(false);
   const [editPrompt, setEditPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,9 +93,51 @@ export function NewJob() {
 
   const defaults = (stage: string) => stages?.find((s) => s.name === stage)?.defaults ?? {};
   const orbit = defaults("orbit_video");
-  const vw = Number(orbit.width ?? 768);
-  const vh = Number(orbit.height ?? 1024);
-  const crop = useMemo(() => picked && cropBox(picked.width, picked.height, vw, vh), [picked, vw, vh]);
+  const shapeRatio = shape === "image" ? (picked ? closestShape(picked.width / picked.height).ratio! : 3 / 4) : SHAPES.find((s) => s.key === shape)?.ratio;
+  const [vw, vh] = shapeRatio ? frameSize(shapeRatio, SIZES[size].px) : [Number(customW), Number(customH)];
+  const sizeOk = [vw, vh].every((v) => Number.isInteger(v) && v % 32 === 0 && v >= 256 && v <= 2048);
+  const base = useMemo(() => picked && sizeOk ? coverBox(picked.width, picked.height, vw, vh) : null, [picked, vw, vh, sizeOk]);
+  const crop = base && cropRegion(base, view);
+  const moved = view.zoom !== 1 || (crop && (Math.abs(crop.left + crop.width / 2 - 0.5) > 1e-3 || Math.abs(crop.top + crop.height / 2 - 0.5) > 1e-3));
+
+  // A new image or video shape starts from the centered crop again.
+  useEffect(() => setView(CENTERED), [picked, vw, vh]);
+
+  // Keep the view's center where cropRegion clamps it, so a drag past the edge does not build up slack.
+  const settle = (v: View): View => {
+    if (!base) return v;
+    const r = cropRegion(base, v);
+    return { zoom: v.zoom, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+  };
+
+  // The wheel zooms the crop (a non-passive listener, so the page does not scroll instead).
+  useEffect(() => {
+    const el = preview.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setView((v) => settle({ ...v, zoom: clamp(v.zoom * Math.exp(-e.deltaY * 0.0006), 1, MAX_ZOOM) }));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  });
+
+  function drag(e: React.PointerEvent<HTMLDivElement>) {
+    e.stopPropagation();
+    const box = preview.current?.getBoundingClientRect();
+    if (!box || !crop) return;
+    const start = { x: e.clientX, y: e.clientY, cx: crop.left + crop.width / 2, cy: crop.top + crop.height / 2 };
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
+    const move = (m: PointerEvent) =>
+      setView((v) => settle({ ...v, cx: start.cx + (m.clientX - start.x) / box.width, cy: start.cy + (m.clientY - start.y) / box.height }));
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+  }
 
   function pick(file: File | undefined) {
     if (!file) return;
@@ -72,6 +161,10 @@ export function NewJob() {
     setBusy(true);
     setError(null);
     const orbitParams: Record<string, number> = {};
+    if (vw !== Number(orbit.width ?? 768) || vh !== Number(orbit.height ?? 1024)) {
+      orbitParams.width = vw;
+      orbitParams.height = vh;
+    }
     if (length) orbitParams.length = Number(length);
     if (steps) orbitParams.steps = Number(steps);
     const editing = editOn && editPrompt.trim() !== "";
@@ -84,6 +177,7 @@ export function NewJob() {
         height_m: height ? Number(height) : undefined,
         subject: subject || undefined,
         orbit: orbitParams,
+        crop: moved && crop ? [crop.left, crop.top, crop.left + crop.width, crop.top + crop.height] : undefined,
         seeds: seeds.split(/[\s,]+/).filter(Boolean).map(Number),
       });
       // With an edit, the job waits as a draft: review the edit there, then start.
@@ -96,7 +190,10 @@ export function NewJob() {
     }
   }
 
-  const small = picked && (picked.width < vw || picked.height < vh);
+  // The kept region in image pixels: zooming in past the video's resolution adds no detail.
+  const keptW = picked && crop ? Math.round(picked.width * crop.width) : 0;
+  const keptH = picked && crop ? Math.round(picked.height * crop.height) : 0;
+  const small = picked && crop && (keptW < vw || keptH < vh);
   return (
     <div className="page newjob">
       <header className="page-head">
@@ -126,18 +223,19 @@ export function NewJob() {
           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && input.current?.click()}
         >
           <input ref={input} type="file" accept="image/*" hidden onChange={(e) => pick(e.target.files?.[0])} />
-          {picked && crop ? (
-            <div className="hero-preview">
-              <img src={picked.url} alt="" />
-              {crop.removed > 0.005 && (
-                <div
-                  className="cropframe"
-                  style={{
-                    left: `${crop.left * 100}%`, top: `${crop.top * 100}%`,
-                    width: `${crop.width * 100}%`, height: `${crop.height * 100}%`,
-                  }}
-                />
-              )}
+          {picked ? (
+            <div className="hero-preview" ref={preview}>
+              <img src={picked.url} alt="" draggable={false} />
+              {crop && <div
+                className={`cropframe ${crop.removed > 0.005 ? "" : "full"}`}
+                title="Drag to move the crop; scroll to zoom"
+                onPointerDown={drag}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  left: `${crop.left * 100}%`, top: `${crop.top * 100}%`,
+                  width: `${crop.width * 100}%`, height: `${crop.height * 100}%`,
+                }}
+              />}
             </div>
           ) : (
             <div className="dropzone-empty">
@@ -162,19 +260,69 @@ export function NewJob() {
               <div className="check-row">
                 <span className="muted">Video frames</span>
                 <span>
-                  {vw} × {vh} ({vw / gcd(vw, vh)}:{vh / gcd(vw, vh)})
+                  {vw} × {vh} ({vw / gcd(vw, vh)}:{vh / gcd(vw, vh)}, {((vw * vh) / 1e6).toFixed(2)} MP)
                 </span>
+              </div>
+              <div className="check-row zoom-row">
+                <span className="muted">Crop zoom</span>
+                <input type="range" min={1} max={MAX_ZOOM} step={0.01} value={view.zoom}
+                  onChange={(e) => setView((v) => settle({ ...v, zoom: Number(e.target.value) }))} />
+                <button className="btn small" disabled={!moved} onClick={() => setView(CENTERED)}>Reset</button>
               </div>
               {crop.removed > 0.005 ? (
                 <p className={`note ${crop.removed > 0.15 ? "bad" : "warn"}`}>
                   The image is cropped to the video's aspect ratio: the {(crop.removed * 100).toFixed(0)}% outside the
-                  frame is dropped{crop.removed > 0.15 ? ". Check that the whole subject is inside it." : "."}
+                  frame is dropped{crop.removed > 0.15 ? ". Check that the whole subject is inside it." : "."} Drag the
+                  frame to move it; scroll over the image to zoom.
                 </p>
               ) : (
                 <p className="note good">The aspect ratio matches the video. Nothing is cropped.</p>
               )}
-              {small && <p className="note warn">The image is smaller than a video frame, so the hero adds no extra detail.</p>}
+              {small && (
+                <p className="note warn">
+                  The kept region is {keptW} × {keptH}, smaller than a video frame, so the hero adds no extra detail.
+                </p>
+              )}
             </div>
+          )}
+          {picked && !crop && <p className="note bad">The video size must be multiples of 32 from 256 to 2048.</p>}
+
+          <div className="field-row">
+            <label className="field">
+              <span>Video shape</span>
+              <select value={shape} onChange={(e) => setShape(e.target.value)}>
+                {SHAPES.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.key === "image" && picked ? `Closest to the image (${closestShape(picked.width / picked.height).key})` : s.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {shape === "custom" ? (
+              <>
+                <label className="field">
+                  <span>Width</span>
+                  <input type="number" step={32} min={256} max={2048} value={customW} onChange={(e) => setCustomW(e.target.value)} />
+                </label>
+                <label className="field">
+                  <span>Height</span>
+                  <input type="number" step={32} min={256} max={2048} value={customH} onChange={(e) => setCustomH(e.target.value)} />
+                </label>
+              </>
+            ) : (
+              <label className="field">
+                <span>Video size</span>
+                <select value={size} onChange={(e) => setSize(e.target.value)}>
+                  {Object.entries(SIZES).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+          {(vw * vh !== TESTED_PX || vw / vh !== 3 / 4) && sizeOk && (
+            <p className="note warn">
+              Only 3:4 at 768 × 1024 has been tested.
+              {vw * vh > TESTED_PX * 1.05 ? " A larger video may not fit in 24 GB of GPU memory." : ""}
+            </p>
           )}
 
           <label className="field">
@@ -243,7 +391,7 @@ export function NewJob() {
           </div>
 
           {error && <p className="note bad">{error}</p>}
-          <button className="btn primary big" disabled={!picked || busy || (editOn && !editPrompt.trim())} onClick={submit}>
+          <button className="btn primary big" disabled={!picked || !sizeOk || busy || (editOn && !editPrompt.trim())} onClick={submit}>
             {busy ? "Starting…" : editOn ? "Edit and review" : `Start ${want} orbit${want > 1 ? "s" : ""}`}
           </button>
         </div>

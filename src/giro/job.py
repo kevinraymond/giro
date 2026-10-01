@@ -50,6 +50,7 @@ class JobSpec:
     video_gpus: list[int] = field(default_factory=lambda: [1])      # GPU 0 drives the desktop
     post_gpus: list[int] = field(default_factory=lambda: [0, 1])
     use_edit: bool = False  # orbit input/edited.png (the edit stage's output) instead of source.png
+    crop: list[float] | None = None  # region of the image the hero keeps, (left, top, right, bottom) in 0-1; None: centered
 
 
 @dataclass
@@ -301,7 +302,7 @@ class Runner:
         path = job.attempt_dir(attempt.seed)
         orbit = stages.ORBIT.defaults | spec.orbit
         # Inline (milliseconds): GPU requests must queue in launch order.
-        prepare_hero(job.hero_source(), path, orbit["width"], orbit["height"])
+        prepare_hero(job.hero_source(), path, orbit["width"], orbit["height"], spec.crop)
         attempt.status, attempt.reason = "running", ""
         t0 = time.monotonic()
         stopped = lambda: self.cancel.is_set() or attempt.seed in self._stop  # noqa: E731

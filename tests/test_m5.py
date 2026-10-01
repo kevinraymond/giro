@@ -435,3 +435,37 @@ def test_rejected_fallback_goes_back_to_colmap_and_gap_fill(tmp_path, monkeypatc
     assert len(_FakeComfy.prompts) == 1  # the fill was planned from COLMAP's jump
     # After the fill COLMAP ran again, so the fallback got one more try; then the attempt is rejected.
     assert _Fallback.runs == 2 and attempt.status == "rejected" and attempt.poses == "colmap"
+
+
+# --- video shape, size and crop ---
+
+from giro.api import NewJob  # noqa: E402
+from giro.hero import fit_to_aspect  # noqa: E402
+
+
+def test_hero_keeps_the_chosen_region_at_the_video_aspect(tmp_path):
+    src = tmp_path / "src.png"
+    im = Image.new("RGB", (1000, 800), "black")
+    im.paste((255, 0, 0), (600, 100, 900, 500))  # the subject, right of center
+    im.save(src)
+    centered, removed = fit_to_aspect(src, 768, 1024)  # 600x800 from the middle
+    assert centered.size == (600, 800) and removed == pytest.approx(0.4)
+    region, removed = fit_to_aspect(src, 768, 1024, crop=(0.55, 0.05, 0.95, 0.65))  # zoomed onto the subject
+    assert region.size == (360, 480) and removed == pytest.approx(1 - 360 * 480 / 800_000)
+    assert region.getpixel((180, 240)) == (255, 0, 0)
+
+
+def test_new_job_checks_the_video_size_and_crop():
+    spec = NewJob(orbit={"width": 1344, "height": 768}, crop=[0.1, 0.0, 0.6, 0.9]).spec()
+    assert spec.orbit == {"width": 1344, "height": 768} and spec.crop == [0.1, 0.0, 0.6, 0.9]
+    with pytest.raises(ValueError, match="multiple of 32"):
+        NewJob(orbit={"width": 1000}).spec()
+    with pytest.raises(ValueError, match="crop must be"):
+        NewJob(crop=[0.5, 0.0, 0.4, 1.0]).spec()
+
+
+@pytest.mark.parametrize("frame", [(768, 1024), (1344, 768), (1184, 672), (672, 1184), (896, 896), (736, 1088)])
+def test_fallback_feeds_da3_the_frames_shape_on_its_patch_grid(frame):
+    w, h = fallback.model_size(*frame, 504)
+    assert w % 14 == 0 and h % 14 == 0 and abs(max(w, h) - 504) <= 56
+    assert abs((w / h) / (frame[0] / frame[1]) - 1) < 0.005  # within the worker's 2%, with room to spare
