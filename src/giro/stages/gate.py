@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 
 from giro.stages.base import Ctx, Rejected, Stage
-from giro.stages.poses import read_images_txt
+from giro.stages.poses import SOURCES, active_source, read_images_txt
 
 
 def qvec_to_rotmat(q: list[float]) -> np.ndarray:
@@ -111,7 +111,8 @@ class Gate(Stage):
         registered = read_images_txt(attempt / "poses" / "colmap" / "model_txt" / "images.txt")
         n_inputs = len(list((attempt / "frames").glob("*.png"))) + len(list((attempt / "hero").glob("*.png")))
         frames = sorted(name for name in registered if name.startswith("frames/"))
-        poses_metrics = json.loads((attempt / "metrics.json").read_text()).get("poses_colmap", {})
+        source = active_source(attempt)  # COLMAP's own cameras, or the pose fallback's
+        poses_metrics = json.loads((attempt / "metrics.json").read_text()).get(SOURCES[source], {})
 
         values: dict[str, Any] = {
             "reg_rate": round(len(registered) / n_inputs, 4) if n_inputs else 0.0,
@@ -140,11 +141,12 @@ class Gate(Stage):
 
         for k, v in values.items():
             ctx.metric(k, v)
+        ctx.metric("poses", source)
         ctx.metric("passed", passed)
         if reasons:
             ctx.metric("reasons", reasons)
         (attempt / "gate.json").write_text(json.dumps({
-            "passed": passed, "reasons": reasons, "checks": checks,
+            "passed": passed, "reasons": reasons, "checks": checks, "poses": source,
             "ring": ring | {"frames": frames},
         }, indent=2) + "\n")
         ctx.progress(1.0, "passed" if passed else "failed")

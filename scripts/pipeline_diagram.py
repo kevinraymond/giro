@@ -79,7 +79,7 @@ def svg(t: dict) -> str:
         box(video, row1, w, "Orbit video", "MiniMax H3"),
         box(frames, row1, w, "Frames", "trim · dedup"),
         box(masks, row1, w, "Masks", "SAM 3.1"),
-        box(poses, row1, w, "Poses", "COLMAP"),
+        box(poses, row1, w, "Poses", "COLMAP · DA3"),  # DA3: the pose fallback
         diamond(gx, c1, gr, "Gate", "clean ring?"),
         path(f"M{video + w} {c1} H{frames - 2}"),
         path(f"M{frames + w} {c1} H{masks - 2}"),

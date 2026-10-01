@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, fileUrl, thumbUrl, type Attempt, type Job } from "./api";
 import { go } from "./App";
 import {
-  ATTEMPT_STATUS, JOB_STATUS, STAGES, ago, headline, jobName, reasons, stageIndex, stageLabel,
+  ATTEMPT_STATUS, JOB_STATUS, STAGES, ago, headline, jobName, reasons, stageIndex, stageKey, stageLabel,
 } from "./format";
 import { DraftView } from "./DraftView";
 import { SplatViewer } from "./lazy";
@@ -130,7 +130,8 @@ function AttemptCard({ job, attempt: a, rank }: { job: Job; attempt: Attempt; ra
   const st = ATTEMPT_STATUS[a.status] ?? { label: a.status, tone: "muted" as const };
   const current = stageIndex(a.stage);
   const stageName = STAGES[current]?.name;
-  const p = stageName ? progress?.[stageName] : undefined;
+  const live = stageKey(a.stage);
+  const p = live ? progress?.[live] : undefined;
   const active = a.status === "running" || a.status === "queued";
   const failedAt = a.status === "rejected" || a.status === "error" ? current : -1;
   // The video exists once the orbit stage is behind the attempt.

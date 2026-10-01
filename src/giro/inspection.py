@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image
 
 from giro.stages import gapfill
+from giro.stages.poses import active_source
 from giro.stages.canonicalize import orbit_frame
 from giro.stages.crop import load_views
 from giro.stages.poses import read_images_txt
@@ -103,8 +104,13 @@ def frames(attempt: Path) -> dict[str, Any]:
             "generated": name in generated,
             "replaced": name in replaced,
         })
+    source = active_source(attempt)
+    metrics = json.loads((attempt / "metrics.json").read_text()) if (attempt / "metrics.json").exists() else {}
     return {
         "frames": out,
+        # "fallback": Depth Anything 3 poses refined by COLMAP; "unrefined" kept the DA3 pose
+        "poses": {"source": source,
+                  "unrefined": metrics.get("poses_fallback", {}).get("unrefined", []) if source == "fallback" else []},
         "static_start": dedup.get("static_start"),
         "static_end": dedup.get("static_end"),
         "hero": {"posed": "hero/hero.png" in registered, "error": errors.get("hero/hero.png")},

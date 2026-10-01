@@ -25,12 +25,14 @@ COLMAP and a trainer, then delete the room by hand.
 <!-- regenerate with: uv run scripts/pipeline_diagram.py -->
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/pipeline-dark.svg">
-  <img src="docs/images/pipeline-light.svg" alt="Pipeline: one image, optionally background-edited, goes into a per-seed loop of orbit video, frames, masks, poses and a gate. A missing arc goes to gap fill and back to masks; a failure rerolls a new seed; a pass goes on to train, crop, upright and scale, and the exported splat." width="1000">
+  <img src="docs/images/pipeline-light.svg" alt="Pipeline: one image, optionally background-edited, goes into a per-seed loop of orbit video, frames, masks, poses (COLMAP, with a Depth Anything 3 fallback) and a gate. A missing arc goes to gap fill and back to masks; a failure rerolls a new seed; a pass goes on to train, crop, upright and scale, and the exported splat." width="1000">
 </picture>
 
 The **gate** is the core idea. It checks the recovered camera ring: at least 330° of sweep,
 steady one-way motion, no jump over 30° between frames, a closed loop and a round path. A failing
-seed is rerolled. If the only problem is one missing arc, **gap fill** regenerates just that arc.
+seed is rerolled. If COLMAP's cameras are what fails, a **pose fallback** poses the frames with
+Depth Anything 3 and refines them with COLMAP. If the only problem is one missing arc, **gap fill**
+regenerates just that arc.
 Passing seeds are ranked by held-out PSNR.
 
 The rest follows from there. Masking the subject before COLMAP rescues "turntable" videos. Brush
@@ -99,8 +101,9 @@ The details are in [docs/FINDINGS.md](docs/FINDINGS.md).
 - Masking out the room rescues turntable videos. One seed went from 4 to 119 of 119 frames placed.
 - Gap fill regenerates a missing arc in about 40 s, against 7 minutes for a reroll. It passed in
   3 of 3 tries.
-- MapAnything's raw poses trained blurry splats, but as a starting point for COLMAP's refinement
-  they matched COLMAP.
+- Feedforward poses (Depth Anything 3, VGGT, MapAnything) trained splats 2–4 dB worse than
+  COLMAP's, but as a starting point for COLMAP's refinement they matched it. The pose fallback
+  built on this rescued a seed COLMAP left with a 57° jump, in 12 s.
 - Transparent training plus the hull crop needed no manual cleanup on the 4 test subjects,
   including their swords and mirrors.
 - The Quest 3 browser stuttered at 245K splats, well below the 400–600K I expected. This needs a
@@ -119,7 +122,7 @@ uv sync
 scripts/setup_comfy.sh                  # pinned headless ComfyUI in vendor/
 scripts/setup_brush.sh                  # pinned Brush
 scripts/setup_splat_transform.sh        # pinned splat-transform
-scripts/setup_mapanything.sh            # optional pose fallback
+scripts/setup_da3.sh                    # optional pose fallback (Depth Anything 3)
 # point scripts/extra_model_paths.yaml at your models
 cd ui && npm ci && npm run build && cd ..
 
@@ -160,7 +163,8 @@ including what it says about outputs, before use.
 | [Qwen-Image-Edit-2511](https://huggingface.co/Qwen/Qwen-Image-Edit-2511) ([ComfyUI files](https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI), [Lightning LoRA](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning)) | Background edit | Apache-2.0 |
 | [SAM 3.1](https://huggingface.co/facebook/sam3.1) ([ComfyUI files](https://huggingface.co/Comfy-Org/sam3.1)) | Subject masks | [SAM License](https://huggingface.co/Comfy-Org/sam3.1/blob/main/LICENSE) |
 | [COLMAP](https://colmap.github.io) | Camera poses | BSD-3-Clause |
-| [MapAnything](https://github.com/facebookresearch/map-anything) ([weights](https://huggingface.co/facebook/map-anything-apache)) | Experimental pose fallback | Apache-2.0 |
+| [Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3) ([DA3-BASE weights](https://huggingface.co/depth-anything/DA3-BASE)) | Pose fallback | Apache-2.0 |
+| [MapAnything](https://github.com/facebookresearch/map-anything) ([weights](https://huggingface.co/facebook/map-anything-apache)) | Pose fallback, tried first (worker kept) | Apache-2.0 |
 | [Brush](https://github.com/ArthurBrussee/brush) | Splat training | Apache-2.0 |
 | [splat-transform](https://github.com/playcanvas/splat-transform) | SPZ/SOG export | MIT |
 | [Spark](https://github.com/sparkjsdev/spark), [three.js](https://threejs.org) | Web and WebXR viewer | MIT |

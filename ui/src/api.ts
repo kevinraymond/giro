@@ -16,6 +16,7 @@ export interface Attempt {
   params: Record<string, Record<string, unknown>>;
   override: "pass" | "fail" | null;
   filled?: string[]; // gaps of the orbit the video model regenerated (gapfill)
+  poses?: "colmap" | "fallback"; // whose cameras it trained on (fallback: Depth Anything 3 + COLMAP)
 }
 
 export interface JobSpec {

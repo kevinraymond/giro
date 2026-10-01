@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, fileUrl, type AttemptDetail, type StageInfo } from "./api";
 import { go } from "./App";
-import { ATTEMPT_STATUS, METRICS, STAGES, bytes, checkText, jobName, reasons, stageLabel } from "./format";
+import { ATTEMPT_STATUS, METRICS, STAGES, bytes, checkText, jobName, reasons, stageKey, stageLabel } from "./format";
 import { CamerasTab, CropTab, SplatViewer, TrainingTab } from "./lazy";
 import type { SplatInfo } from "./SplatViewer";
 import { key, putJob, useStore } from "./store";
@@ -43,7 +43,7 @@ export function AttemptView({ jobId, seed, tab }: { jobId: string; seed: number;
   const current = tab && TABS.some((t) => t.id === tab) ? tab : hasExport ? "result" : "orbit";
   const rank = job.ranking.indexOf(seed);
   const active = attempt.status === "running" || attempt.status === "queued";
-  const stageName = STAGES.find((s) => attempt.stage.startsWith(s.name))?.name;
+  const stageName = stageKey(attempt.stage);
   const p = stageName ? progress?.[stageName] : undefined;
 
   return (
@@ -80,6 +80,12 @@ export function AttemptView({ jobId, seed, tab }: { jobId: string; seed: number;
         <ul className="reasons big">
           {reasons(attempt.reason).map((r) => <li key={r}>{r}</li>)}
         </ul>
+      )}
+      {attempt.poses === "fallback" && (
+        <p className="muted small">
+          Pose fallback: COLMAP's cameras failed the orbit check, so Depth Anything 3 posed the frames and COLMAP
+          refined them. Details in the Cameras tab.
+        </p>
       )}
       {attempt.filled && attempt.filled.length > 0 && (
         <p className="muted small">

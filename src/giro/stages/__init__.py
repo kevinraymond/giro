@@ -3,10 +3,12 @@ from giro.stages.canonicalize import Canonicalize
 from giro.stages.crop import Crop
 from giro.stages.edit import EditImage
 from giro.stages.export import Export
+from giro.stages.fallback import PoseFallback
 from giro.stages import gapfill
 from giro.stages.frames import Dedup, Extract
 from giro.stages.gapfill import GapFill
 from giro.stages.gate import Gate
+from giro.stages import poses
 from giro.stages.masks import Masks
 from giro.stages.orbit import OrbitVideo
 from giro.stages.poses import ColmapPoses
@@ -21,9 +23,12 @@ PIPELINE: list[Stage] = [ORBIT, Extract(), Dedup(), Masks(), ColmapPoses(), Gate
 BY_NAME: dict[str, Stage] = {s.name: s for s in PIPELINE}
 # Runs once per job, before any attempt, when the user asks for it (not part of PIPELINE).
 EDIT = EditImage()
+# Runs when the gate rejects COLMAP's cameras: Depth Anything 3 poses, refined by COLMAP; the
+# gate then judges those (not part of PIPELINE).
+FALLBACK = PoseFallback()
 # Runs when the gate rejects an attempt only for a jump in the camera path; then masks,
 # poses and gate run again on the filled frames (not part of PIPELINE).
 GAPFILL = GapFill()
 
-__all__ = ["BY_NAME", "EDIT", "GAPFILL", "ORBIT", "PIPELINE", "Cancelled", "Ctx", "Rejected", "Stage",
-           "StageFailed", "gapfill"]
+__all__ = ["BY_NAME", "EDIT", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "Cancelled", "Ctx", "Rejected", "Stage",
+           "StageFailed", "gapfill", "poses"]

@@ -41,6 +41,7 @@ interface FramesData {
   static_end: number | null;
   hero: { posed: boolean; error: number | null };
   filled?: string[];
+  poses?: { source: "colmap" | "fallback"; unrefined: string[] };
   thumb_height: number;
 }
 
@@ -134,6 +135,18 @@ function FrameSummary({ data }: { data: FramesData }) {
       </dd>
       <dt>Hero</dt>
       <dd>{data.hero.posed ? `placed${data.hero.error !== null ? `, ${data.hero.error.toFixed(2)} px` : ""}` : "not placed"}</dd>
+      {data.poses?.source === "fallback" && (
+        <>
+          <dt>Cameras from</dt>
+          <dd>
+            the pose fallback
+            <small className="muted">
+              COLMAP's cameras failed the orbit check, so Depth Anything 3 posed the frames and COLMAP refined them
+              {data.poses.unrefined.length > 0 && ` (${data.poses.unrefined.length} kept the Depth Anything 3 pose: too few matches to refine)`}
+            </small>
+          </dd>
+        </>
+      )}
       {data.filled && data.filled.length > 0 && (
         <>
           <dt>Gap filled</dt>
