@@ -78,6 +78,19 @@ class Stage:
     def run(self, attempt: Path, params: dict[str, Any], ctx: Ctx) -> None:
         raise NotImplementedError
 
+    def is_current(self, attempt: Path, params: dict[str, Any] | None) -> bool:
+        """True if execute would skip: an identical run is recorded and its outputs still exist.
+        The job runner asks before leasing a GPU, so a rerun does not queue for one it won't use."""
+        attempt = attempt.resolve()
+        return self._recorded(attempt, self._key(attempt, self.defaults | (params or {}))) is not None
+
+    def _recorded(self, attempt: Path, key: str) -> dict[str, Any] | None:
+        record = attempt / ".stages" / f"{self.name}.json"
+        if not record.exists() or not all((attempt / o).exists() for o in self.outputs):
+            return None
+        done = json.loads(record.read_text())
+        return done if done.get("key") == key else None
+
     def execute(self, attempt: Path, params: dict[str, Any] | None, ctx: Ctx, force: bool = False) -> bool:
         """Run unless an identical earlier run is recorded. Returns True if it ran."""
         # Absolute: external tools (Brush) resolve relative paths against their own bases.
@@ -88,12 +101,10 @@ class Stage:
         ctx.check_cancelled()  # a stage queued behind a cancel must not start
         record = attempt / ".stages" / f"{self.name}.json"
         key = self._key(attempt, merged)
-        if not force and record.exists() and all((attempt / o).exists() for o in self.outputs):
-            done = json.loads(record.read_text())
-            if done.get("key") == key:
-                ctx.metrics.update(done.get("metrics", {}))
-                ctx.log("unchanged since last run, skipped")
-                return False
+        if not force and (done := self._recorded(attempt, key)) is not None:
+            ctx.metrics.update(done.get("metrics", {}))
+            ctx.log("unchanged since last run, skipped")
+            return False
         t0 = time.monotonic()
         if ctx.on_start:
             ctx.on_start(self.name)

@@ -51,6 +51,19 @@ const CENTERED: View = { zoom: 1, cx: 0.5, cy: 0.5 };
 const MAX_ZOOM = 4;
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+// SAM 3 keeps one match per comma-separated item unless it ends in ":N" (ComfyUI's sam3_clip),
+// so "two women" finds one woman per frame, a different one from frame to frame.
+const COUNTS: Record<string, number> = { two: 2, both: 2, pair: 2, couple: 2, three: 3, four: 4, five: 5, six: 6 };
+function countHints(prompt: string): { said: string; fix: string }[] {
+  return prompt.split(",").map((p) => p.trim()).filter((p) => p && !/:\s*\d+(\.\d+)?$/.test(p)).flatMap((p) => {
+    const m = p.match(/^(\d+|two|three|four|five|six|both|pair of|couple of|pair|couple)\s+(.+)$/i);
+    if (!m) return [];
+    const word = m[1].toLowerCase().replace(/ of$/, "");
+    const n = /^\d+$/.test(word) ? Number(word) : COUNTS[word];
+    return n > 1 ? [{ said: p, fix: `${m[2]}:${n}` }] : [];
+  });
+}
+
 // The region the hero keeps: the cover box shrunk by the zoom, moved to the view's center, kept inside the image.
 function cropRegion(base: { width: number; height: number }, v: View) {
   const width = base.width / v.zoom;
@@ -352,8 +365,16 @@ export function NewJob() {
           <label className="field">
             <span>What to keep</span>
             <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={String(defaults("masks").subject_prompt ?? "main subject")} />
-            <small className="muted">What the segmenter should find, e.g. "person, held object:2". Leave empty for the default.</small>
+            <small className="muted">
+              What the segmenter should find. Each comma-separated item keeps one match; add ":N" to keep up to N, e.g.
+              "woman:2, bowl, held object:2". Leave empty for the default.
+            </small>
           </label>
+          {countHints(subject).map((h) => (
+            <p key={h.said} className="note warn">
+              "{h.said}" keeps only one match per frame, a different one from frame to frame. Write "{h.fix}" to keep {h.fix.split(":").pop()}.
+            </p>
+          ))}
           <details className="advanced">
             <summary>Video settings</summary>
             <div className="field-row">

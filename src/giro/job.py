@@ -333,7 +333,9 @@ class Runner:
                     if stage.name == "gate" and attempt.override == "pass":
                         params = params | {"enforce": False}  # keep the measurements, ignore the verdict
                 try:
-                    if stage.gpu_mb:
+                    # A stage that will skip itself needs no GPU: a rerun after new params does not
+                    # wait behind other attempts' videos for stages it reuses.
+                    if stage.gpu_mb and not await asyncio.to_thread(stage.is_current, path, params):
                         prefs = spec.video_gpus if stage is stages.ORBIT else spec.post_gpus
                         ran = await self._execute_leased(attempt, stage, path, params, ctx, prefs, -order)
                     else:
@@ -367,6 +369,7 @@ class Runner:
                     # Rejected: the video is bad, so reroll. Anything else is a fault in giro or
                     # the machine, and a new seed would only fail the same way.
                     attempt.status = "rejected" if isinstance(e, stages.Rejected) else "error"
+                    attempt.stage = stage.name  # not the fallback or gap fill that ran after the gate's verdict
                     attempt.reason = str(e)
                     self.log(f"s{attempt.seed}: {'REJECTED' if attempt.status == 'rejected' else 'ERROR'} at {stage.name}: {e}")
                     break

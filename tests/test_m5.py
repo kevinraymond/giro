@@ -469,3 +469,26 @@ def test_fallback_feeds_da3_the_frames_shape_on_its_patch_grid(frame):
     w, h = fallback.model_size(*frame, 504)
     assert w % 14 == 0 and h % 14 == 0 and abs(max(w, h) - 504) <= 56
     assert abs((w / h) / (frame[0] / frame[1]) - 1) < 0.005  # within the worker's 2%, with room to spare
+
+
+def test_a_rerun_leases_no_gpu_for_stages_it_reuses(tmp_path, monkeypatch):
+    orbit = _Orbit()
+    monkeypatch.setattr(stages, "ORBIT", orbit)
+    monkeypatch.setattr(stages, "PIPELINE", [orbit, _Train()])
+    monkeypatch.setattr(job_mod.server, "is_up", lambda g: False)
+    image = tmp_path / "subject.png"
+    Image.new("RGB", (16, 16), "green").save(image)
+    spec = job_mod.JobSpec(image=str(image), want=1, max_attempts=1, seeds=[1])
+    job = asyncio.run(job_mod.Runner(job_mod.Job.create(tmp_path / "jobs", spec, "t"), lambda m: None).run())
+    (attempt,) = job.attempts
+    assert attempt.gpus == {"orbit_video": 1} and orbit.is_current(job.attempt_dir(1), {"seed": 1} | spec.orbit)
+    attempt.status, attempt.gpus = "queued", {}  # rerun, e.g. after new params for a later stage
+    job = asyncio.run(job_mod.Runner(job, lambda m: None).run())
+    assert job.attempts[0].status == "passed" and job.attempts[0].gpus == {}  # the video was reused without a lease
+
+
+def test_a_rejection_after_a_failed_fallback_is_the_gates(tmp_path, monkeypatch, fake_comfy):
+    gate = _PoseGate()
+    gate.fallback_passes = False
+    attempt, _ = _pose_job(tmp_path, monkeypatch, gate)
+    assert attempt.status == "rejected" and attempt.stage == "gate"
