@@ -128,6 +128,7 @@ cd ui && npm ci && npm run build && cd ..
 
 uv run giro serve                       # UI on http://<host>:8470
 uv run giro run image.png -o data/try1  # or one seed from the CLI
+uv run giro job export data/jobs/<job>  # a job as one zip: offline HTML report + PLY/SOG/SPZ
 ```
 
 `just check` lints and runs the tests. Outputs go to `data/`, which git ignores.
