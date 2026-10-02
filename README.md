@@ -60,7 +60,7 @@ because it covered only 182° and jumped 169° in one step.
 each good seed's result, orbit, cameras, training curve and numbers, plus its splat as PLY, SOG
 and SPZ.
 
-<img src="docs/images/job.webp" alt="Job page: best result viewer on top, two seed cards below, one passed and one rejected with reasons" width="900">
+<img src="docs/images/job.webp" alt="Job page: One more orbit and Export job in the header, best result viewer on top, two seed cards below, one passed and one rejected with reasons" width="900">
 
 ### Result
 The cropped splat with its size, its splat count against the Quest budget, downloads, and a
