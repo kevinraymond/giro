@@ -33,7 +33,12 @@ export function App() {
   // VR pages are the whole window: the Quest browser has little room and no use for the sidebar.
   if (page === "vr" && id && seed) return <VrView items={[{ url: fileUrl(id, `attempts/${seed}/export/splat.spz`), label: `${jobName(id)} · seed ${seed}` }]} />;
   // #/vr-bench/a.spz,b.spz,...: measure each in turn in one VR session.
-  if (page === "vr-bench" && id) return <VrView items={id.split(",").map((f) => ({ url: `/bench/${f}`, label: f.replace(/\.spz$/, "") }))} />;
+  // An item may carry @std=N: Spark's maxStdDev for that item (e.g. crowd_245k.spz@std=2).
+  if (page === "vr-bench" && id) return <VrView items={id.split(",").map((item) => {
+    const [f, opt] = item.split("@");
+    const std = opt?.startsWith("std=") ? Number(opt.slice(4)) : undefined;
+    return { url: `/bench/${f}`, label: f.replace(/\.spz$/, "") + (std ? ` std ${std}` : ""), maxStdDev: std };
+  })} />;
   let main;
   if (page === "job" && id && seed) main = <AttemptView key={`${id}/${seed}`} jobId={id} seed={Number(seed)} tab={tab} />;
   else if (page === "job" && id) main = <JobView key={id} jobId={id} />;

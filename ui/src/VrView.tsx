@@ -14,6 +14,7 @@ export interface VrStats {
   label: string;
   target_hz: number | null; // what the page asked the headset for (?hz=)
   scale: number; // WebXR framebuffer scale (?scale=)
+  max_std_dev: number;
   splats: number;
   frames: number;
   seconds: number;
@@ -32,6 +33,7 @@ const DISTANCE = 1.5; // m from the viewer's start to the subject
 export interface VrItem {
   url: string;
   label: string;
+  maxStdDev?: number; // how far out each Gaussian is drawn (Spark default sqrt(8) = 2.83)
 }
 
 /** One splat, or a benchmark sequence: after Enter VR each item is shown in turn, warmed up
@@ -53,7 +55,9 @@ export default function VrView({ items }: { items: VrItem[] }) {
     el.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x101214);
-    scene.add(new SparkRenderer({ renderer }));
+    const spark = new SparkRenderer({ renderer });
+    scene.add(spark);
+    const defaultStdDev = spark.maxStdDev;
 
     // Controllers move the camera's parent: the rig.
     const rig = new THREE.Group();
@@ -99,7 +103,15 @@ export default function VrView({ items }: { items: VrItem[] }) {
       for (const item of items) {
         if (!alive || !renderer.xr.isPresenting) return;
         setStatus(`${item.label}: loading`);
-        await load(item);
+        try {
+          await load(item);
+        } catch (e) {
+          // Skip it, but say so: in VR nobody sees the status line.
+          fetch("/api/xr/stats", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: item.label, error: String(e), xr: renderer.xr.isPresenting }) }).catch(() => {});
+          continue;
+        }
+        spark.maxStdDev = item.maxStdDev ?? defaultStdDev;
         await wait(3000); // sorting settles, GPU caches warm
         frames.length = 0;
         await wait(10000);
@@ -148,7 +160,7 @@ export default function VrView({ items }: { items: VrItem[] }) {
       const interval = hz ? 1000 / hz : q(0.5);
       const total = frames.reduce((s, x) => s + x, 0);
       const s: VrStats = {
-        label, target_hz: targetHz, scale, splats, frames: frames.length, seconds: Math.round(total / 10) / 100,
+        label, target_hz: targetHz, scale, max_std_dev: Math.round(spark.maxStdDev * 100) / 100, splats, frames: frames.length, seconds: Math.round(total / 10) / 100,
         fps: Math.round((1000 * frames.length / total) * 10) / 10,
         p50_ms: Math.round(q(0.5) * 100) / 100, p95_ms: Math.round(q(0.95) * 100) / 100,
         p99_ms: Math.round(q(0.99) * 100) / 100,
