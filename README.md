@@ -50,7 +50,7 @@ Drop an image, set the subject's height and the number of good orbits wanted, an
 change the background first. Pick the video's shape and size, and drag or zoom the crop frame to
 choose which part of the image the orbit starts from.
 
-<img src="docs/images/new-job.webp" alt="New job page: image drop zone, subject height, orbits wanted, seed limit, segmentation prompt" width="900">
+<img src="docs/images/new-job.webp" alt="New job page: the knight image with its crop frame, crop zoom, video shape and size, name, subject height, orbits wanted, seed limit, segmentation prompt with its count hint" width="900">
 
 ### Job
 The best result on top and one card per seed below. Here one seed passed. The other was rejected
