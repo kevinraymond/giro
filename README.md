@@ -47,13 +47,18 @@ reason.
 
 ### New job
 Drop an image, set the subject's height and the number of good orbits wanted, and optionally
-change the background first.
+change the background first. Pick the video's shape and size, and drag or zoom the crop frame to
+choose which part of the image the orbit starts from.
 
 <img src="docs/images/new-job.webp" alt="New job page: image drop zone, subject height, orbits wanted, seed limit, segmentation prompt" width="900">
 
 ### Job
 The best result on top and one card per seed below. Here one seed passed. The other was rejected
 because it covered only 182° and jumped 169° in one step.
+
+**Export job** saves the whole job as one zip to share or archive: an offline HTML report with
+each good seed's result, orbit, cameras, training curve and numbers, plus its splat as PLY, SOG
+and SPZ.
 
 <img src="docs/images/job.webp" alt="Job page: best result viewer on top, two seed cards below, one passed and one rejected with reasons" width="900">
 
