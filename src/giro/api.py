@@ -19,6 +19,7 @@
     GET  /api/jobs/{id}/attempts/{seed}/cameras     cameras and sparse points in the viewer frame
     GET  /api/jobs/{id}/attempts/{seed}/training    PSNR and splat count by iteration, checkpoints
     GET  /api/jobs/{id}/thumb                       small JPEG of the job's image
+    GET  /api/jobs/{id}/export.zip                  offline HTML report + splats (PLY, SOG, SPZ) of the passing attempts
     GET  /api/stages                                stage names and default params
     GET  /files/{id}/{path}                         anything in a job directory
     POST /api/xr/stats | GET /api/xr/stats          frame-time reports from the VR page (data/xr/stats.jsonl)
@@ -45,7 +46,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, ValidationError
 
-from giro import inspection, stages
+from giro import inspection, report, stages
 from giro.index import Index
 from giro.job import JobSpec, locked_elsewhere
 from giro.manager import ActionError, Manager
@@ -278,6 +279,14 @@ def create_app(root: Path, db: Path, gpus: list[int]) -> FastAPI:
         if data is None:
             raise HTTPException(404, "no camera poses yet")
         return data
+
+    @app.get("/api/jobs/{job_id}/export.zip")
+    async def export_job(job_id: str) -> FileResponse:
+        """The job as one zip (giro/report.py), built when asked: attempts may have changed since."""
+        job = manager.job(job_id)
+        out = job.path / "archive" / f"{job.path.name}.zip"
+        await asyncio.to_thread(report.build, job, out)
+        return FileResponse(out, filename=out.name, media_type="application/zip")
 
     @app.get("/api/jobs/{job_id}/thumb")
     async def thumb(job_id: str) -> FileResponse:

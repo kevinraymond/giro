@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from giro import gpu, stages, workflows
+from giro import gpu, report, stages, workflows
 from giro.comfy import server
 from giro.job import Job, JobSpec, Runner, describe
 from giro.stages.orbit import ORBIT_VRAM_MB, prepare_hero
@@ -121,6 +121,11 @@ def _int_list(text: str) -> list[int]:
 
 
 def job_cmd(args: argparse.Namespace) -> int:
+    if args.action == "export":
+        job = Job.load(args.job)
+        out = report.build(job, args.out or Path(f"{job.path.name}.zip"))
+        _log(f"wrote {out} ({out.stat().st_size / 2**20:.1f} MB): index.html, images and splats of {len(job.ranking)} passing attempts")
+        return 0
     if args.action == "show":
         print(describe(Job.load(args.job)))
         return 0
@@ -289,6 +294,9 @@ def main(argv: list[str] | None = None) -> int:
             jr.add_argument("-p", "--param", action="append", default=[], metavar="STAGE.KEY=VALUE",
                             help="change a stage parameter for the rest of the job")
             subject_args(jr)
+    je = jsub.add_parser("export", help="a zip with an offline HTML report and the splats (PLY, SOG, SPZ)")
+    je.add_argument("job", type=Path, help="job directory")
+    je.add_argument("-o", "--out", type=Path, help="zip to write (default: <job name>.zip here)")
     j.set_defaults(func=job_cmd)
 
     sv = sub.add_parser("serve", help="the orchestrator: API, event stream and UI, on the LAN")

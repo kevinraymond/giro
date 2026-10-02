@@ -492,3 +492,46 @@ def test_a_rejection_after_a_failed_fallback_is_the_gates(tmp_path, monkeypatch,
     gate.fallback_passes = False
     attempt, _ = _pose_job(tmp_path, monkeypatch, gate)
     assert attempt.status == "rejected" and attempt.stage == "gate"
+
+
+# --- job export ---
+
+def test_export_packs_a_report_whose_links_all_resolve(tmp_path):
+    import re
+    import zipfile
+
+    from giro import report
+
+    image = tmp_path / "subject.png"
+    Image.new("RGB", (32, 32), "green").save(image)
+    spec = job_mod.JobSpec(image=str(image), want=1, max_attempts=2, seeds=[1, 2])
+    job = job_mod.Job.create(tmp_path / "jobs", spec, "t")
+    (job.path / "input").mkdir(exist_ok=True)
+    Image.new("RGB", (32, 32), "green").save(job.path / "input" / "source.png")
+    good = job.attempt_dir(1)
+    _frames(good, 6)
+    for rel in ("hero/hero.png", "crop/preview_hero.jpg", "canonical/turnaround.jpg"):
+        (good / rel).parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (24, 32), "red").save(good / rel)
+    (good / "export").mkdir()
+    for ext in ("ply", "sog", "spz"):
+        (good / "export" / f"splat.{ext}").write_bytes(b"x" * 100)
+    (good / "video.mp4").write_bytes(b"mp4")
+    (good / "gate.json").write_text(json.dumps({"passed": True, "checks": [
+        {"metric": "reg_rate", "value": 1.0, "op": ">=", "threshold": 0.9, "pass": True}], "ring": {"azimuth_span": 358.0}}))
+    (good / "metrics.json").write_text(json.dumps({"train": {"eval_psnr": 30.0, "eval_ssim": 0.95}}))
+    job.attempts = [job_mod.Attempt(1, status="passed", eval_psnr=30.0, gaussians=1000,
+                                    params={"masks": {"subject_prompt": "woman:2"}}),
+                    job_mod.Attempt(2, status="rejected", stage="gate", reason="the camera covers only 62 degrees")]
+    job.ranking = [1]
+
+    out = report.build(job, tmp_path / "out.zip")
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+        page = zf.read(f"{job.path.name}/index.html").decode()
+    links = set(re.findall(r'(?:src|href)="([^"#:]+)"', page))
+    assert links and all(f"{job.path.name}/{link}" in names for link in links), links - {n.split("/", 1)[1] for n in names}
+    for ext in ("ply", "sog", "spz"):
+        assert f"{job.path.name}/seed-1/splat.{ext}" in names
+    assert "woman:2" in page and "100.0%" in page  # the seed's own prompt; fractions as percentages
+    assert "the camera covers only 62 degrees" in page  # the rejected seed gets its line

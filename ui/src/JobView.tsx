@@ -66,6 +66,12 @@ export function JobView({ jobId }: { jobId: string }) {
           <ActionButton onClick={() => api.addSeeds(job.id, 1).then(putJob)} title="Aim for one more good orbit">
             One more orbit
           </ActionButton>
+          {job.ranking.length > 0 && (
+            <a className="btn" href={`/api/jobs/${encodeURIComponent(job.id)}/export.zip`} download
+              title="A zip with an offline report (result, orbit, cameras, training, numbers) and the splats as PLY, SOG and SPZ">
+              Export job
+            </a>
+          )}
           {!running && (
             <ActionButton
               kind="ghost"
