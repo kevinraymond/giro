@@ -114,18 +114,22 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: 
 .dropzone-empty svg { color: var(--accent); margin-bottom: 6px; }
 .hero-preview { position: relative; max-width: 100%; max-height: 100%; line-height: 0; }
 .hero-preview img { max-width: 100%; max-height: calc(min(560px, 100vh - 200px)); display: block; }
-.cropframe { position: absolute; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55); outline: 1.5px solid var(--accent); }
+.cropframe { position: absolute; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55); outline: 1.5px solid var(--accent); cursor: move; touch-action: none; }
+.cropframe.full { box-shadow: none; outline: none; }
+.hero-preview { overflow: hidden; }
+.zoom-row { align-items: center; gap: 10px; }
+.zoom-row input[type="range"] { flex: 1; }
 .form { display: flex; flex-direction: column; gap: 16px; }
 .checks { display: flex; flex-direction: column; gap: 6px; }
 .check-row { display: flex; justify-content: space-between; font-size: 13px; }
 .field { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; }
 .field > span { font-weight: 500; font-size: 13px; }
 .field small { font-size: 12px; }
-.field input {
+.field input, .field select {
   height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-2);
   background: var(--bg); color: var(--text); font: inherit; width: 100%;
 }
-.field input:focus { outline: none; border-color: var(--accent); }
+.field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
 .field-row { display: flex; gap: 12px; }
 .suffixed { display: flex; align-items: center; gap: 6px; }
 .suffixed span { color: var(--muted); }

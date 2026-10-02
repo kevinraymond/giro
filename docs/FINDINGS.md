@@ -58,8 +58,8 @@ Failure modes seen, and the check that caught each one:
   against 24.5 dB). It fails on turntable videos.
 - Refining MapAnything's poses with COLMAP's triangulation and bundle adjustment matched COLMAP
   (24.45 dB against 24.47 dB). On a seed with three motion-blurred frames that COLMAP could not
-  place, it placed all of them. The gate still rejected that seed, correctly, for a 32° jump. This
-  refinement is kept as an experimental fallback.
+  place, it placed all of them. The gate still rejected that seed, correctly, for a 32° jump. The
+  pose fallback below grew out of this.
 - I also tried the SfM built into
   [Spirula Studio](https://github.com/harry7557558/spirula-studio) (`spirula sfm auto`, with
   giro's masks) on all 28 gated seeds. It gave the same gate verdict as COLMAP on 27 of 28, took
@@ -67,6 +67,30 @@ Failure modes seen, and the check that caught each one:
   motion-blurred borderline seeds stayed borderline with either tool. giro stays on COLMAP, which
   was already wired in.
 - A lower reprojection error did not predict better training results with any pose tool.
+
+## Pose fallback
+
+When the gate rejects COLMAP's cameras, giro poses the frames with Depth Anything 3 (DA3-BASE),
+refines them with COLMAP's triangulation and bundle adjustment on COLMAP's own matches, and gates
+the result. If that fails too, it goes back to COLMAP's cameras and on to gap fill.
+
+- I compared DA3-Giant, DA3-Base, VGGT and MapAnything on all 28 gated seeds. Raw camera centers
+  sat 1.6%, 1.7%, 2.4% and 4.9% of the orbit radius from COLMAP's. Brush on the raw poses lost
+  2–4 dB (24.5 dB with COLMAP; 22.4, 20.7, 21.2 and 20.7 dB).
+- After refinement all four landed within 0.3 dB of COLMAP (24.2, 23.9, 24.4 and 24.5 dB).
+  DA3-Base refines as well as the larger checkpoints, takes about 4 s, and is the only DA3 size
+  under Apache-2.0, so giro uses it.
+- Bundle adjustment cannot place frames that too few triangulated points see: the same smeared
+  frames COLMAP dropped. Plain refinement drops them again and the jump comes back (37–80°).
+  giro keeps their DA3 pose instead, moved into the refined frame by a similarity fitted on the
+  other cameras.
+- On the seed with three smeared frames, this passed the gate with every frame placed: the largest
+  jump went from 57° to 20°, in 12 s. It trained to 34.2 dB, the same as refinement without the
+  kept frames (34.3 dB) on the same held-out frames. Without masks the jump went from 69° to 20°.
+- Every feedforward model failed on turntables: they read the still room as a camera standing
+  still. Graying the background with the masks did not fix it. Masked COLMAP handles those.
+- SenseNova-Vision-7B-MoT, which writes poses as text tokens, scored 9–11 AUC@30 on 10-frame
+  sets spread around the orbit, against 93–96 for DA3 and VGGT, and about 65 on nearby frames.
 
 ## Gap fill
 

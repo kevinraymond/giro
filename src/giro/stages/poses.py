@@ -2,6 +2,12 @@
 
 The frames share one SIMPLE_PINHOLE camera and the hero gets its own, via
 single_camera_per_folder over images/frames and images/hero.
+
+poses/colmap/model (and model_txt) is the attempt's active camera model, the one the
+gate, training, crop and canonicalize read. It links to COLMAP's own reconstruction
+(also linked as model_colmap), or, after the job runner switched to the pose fallback,
+to poses/fallback/model: that one is a COLMAP model too, bundle-adjusted from
+feedforward poses (stages/fallback.py).
 """
 
 from __future__ import annotations
@@ -43,6 +49,32 @@ def read_images_txt(path: Path) -> dict[str, dict[str, Any]]:
             "camera_id": int(f[8]), "n_points": n_points,
         }
     return images
+
+
+SOURCES = {"colmap": "poses_colmap", "fallback": "poses_fallback"}  # pose source -> the stage that made it
+
+
+def active_source(attempt: Path) -> str:
+    """Which reconstruction poses/colmap/model links to: "colmap" or "fallback"."""
+    model = attempt / "poses" / "colmap" / "model"
+    fallback = attempt / "poses" / "fallback"
+    return "fallback" if model.exists() and model.resolve().is_relative_to(fallback.resolve()) else "colmap"
+
+
+def activate(attempt: Path, source: str) -> None:
+    """Point poses/colmap/model(_txt) at COLMAP's own reconstruction or at the fallback's."""
+    work = attempt / "poses" / "colmap"
+    for link in ("model", "model_txt"):  # attempts from before the fallback link COLMAP's model only here
+        own = work / link.replace("model", "model_colmap")
+        if not own.is_symlink() and (work / link).is_symlink() and active_source(attempt) == "colmap":
+            own.symlink_to((work / link).readlink())
+    targets = {"colmap": ("model_colmap", "model_colmap_txt"),
+               "fallback": ("../fallback/model", "../fallback/model_txt")}[source]
+    for link, target in zip(("model", "model_txt"), targets):
+        if not (work / target).exists():
+            raise FileNotFoundError(f"poses/colmap/{target} does not exist")
+        (work / link).unlink(missing_ok=True)
+        (work / link).symlink_to(target)
 
 
 def read_cameras_txt(path: Path) -> dict[int, dict[str, Any]]:
@@ -170,8 +202,9 @@ class ColmapPoses(Stage):
                 best, best_n = model, n
         if best is None:
             raise Rejected("COLMAP produced no model: the frames could not be registered")
-        (work / "model").symlink_to(best.relative_to(work))
-        (work / "model_txt").symlink_to((best.parent / f"{best.name}_txt").relative_to(work))
+        (work / "model_colmap").symlink_to(best.relative_to(work))
+        (work / "model_colmap_txt").symlink_to((best.parent / f"{best.name}_txt").relative_to(work))
+        activate(attempt, "colmap")
 
         stats = colmap("analyzing model", 0.95, "model_analyzer", "--path", str(best))
         registered = read_images_txt(work / "model_txt" / "images.txt")

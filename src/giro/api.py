@@ -69,6 +69,7 @@ class NewJob(BaseModel):
     height_m: float | None = Field(None, gt=0.01, le=100)
     subject: str | None = None
     orbit: dict[str, Any] = {}                 # orbit_video params (length, steps, width, height, prompt)
+    crop: list[float] | None = Field(None, min_length=4, max_length=4)  # (left, top, right, bottom) of the image, 0-1
     params: dict[str, dict[str, Any]] = {}     # per-stage overrides
     video_gpus: list[int] = [1]
     post_gpus: list[int] = [0, 1]
@@ -90,8 +91,16 @@ class NewJob(BaseModel):
         unknown = set(orbit) - set(stages.ORBIT.defaults)
         if unknown:
             raise ValueError(f"orbit_video has no params {sorted(unknown)}")
+        for side in ("width", "height"):  # the video model's grid (MiniMaxH3ImageToVideo: step 32)
+            v = orbit.get(side)
+            if v is not None and (not isinstance(v, int) or v % 32 or not 256 <= v <= 2048):
+                raise ValueError(f"orbit_video {side} must be a multiple of 32 from 256 to 2048, not {v!r}")
+        if self.crop is not None:
+            left, top, right, bottom = self.crop
+            if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+                raise ValueError(f"crop must be (left, top, right, bottom) within 0-1, not {self.crop}")
         return JobSpec(image="", want=self.want, max_attempts=max(self.max_attempts, self.want), seeds=self.seeds,
-                       orbit=orbit, params=params,
+                       orbit=orbit, params=params, crop=self.crop,
                        video_gpus=self.video_gpus, post_gpus=self.post_gpus)
 
 

@@ -16,12 +16,26 @@ export const STAGES: { name: string; label: string; short: string }[] = [
   { name: "export", label: "Exporting", short: "Export" },
 ];
 
-export const stageIndex = (name: string) => STAGES.findIndex((s) => name.startsWith(s.name));
+// Steps that run only after the gate rejects an attempt, shown under the stage they redo.
+const RECOVERY: Record<string, { label: string; under: string }> = {
+  poses_fallback: { label: "Recovering the cameras another way", under: "poses_colmap" },
+  gapfill: { label: "Regenerating a missing arc", under: "orbit_video" },
+};
+
+export const stageIndex = (name: string) => {
+  const recovery = Object.entries(RECOVERY).find(([k]) => name.startsWith(k));
+  return STAGES.findIndex((s) => (recovery ? recovery[1].under : name).startsWith(s.name));
+};
+
+// The key a stage's live progress is published under ("gate", "poses_fallback", ...).
+export const stageKey = (stage: string): string | undefined =>
+  Object.keys(RECOVERY).find((k) => stage.startsWith(k)) ?? STAGES.find((s) => stage.startsWith(s.name))?.name;
 
 export function stageLabel(stage: string): string {
   const waiting = stage.endsWith("(waiting for a GPU)");
+  const recovery = Object.entries(RECOVERY).find(([k]) => stage.startsWith(k));
   const s = STAGES[stageIndex(stage)];
-  const label = s?.label ?? stage;
+  const label = recovery?.[1].label ?? s?.label ?? stage;
   return waiting ? `${label}: waiting for a GPU` : label;
 }
 

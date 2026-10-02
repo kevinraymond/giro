@@ -1,7 +1,9 @@
 import asyncio
 import json
+import shutil
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -272,3 +274,221 @@ def test_a_fill_that_still_fails_the_gate_is_rejected_once(tmp_path, monkeypatch
     (attempt,) = job.attempts
     assert attempt.status == "rejected" and len(attempt.filled) == 1
     assert len(_FakeComfy.prompts) == 1  # filled once, not in a loop
+
+
+# --- pose fallback (Depth Anything 3 + COLMAP refinement) ---
+
+from scipy.spatial.transform import Rotation  # noqa: E402
+
+from giro.stages import fallback, poses  # noqa: E402
+from giro.stages.gate import Gate  # noqa: E402
+
+
+def test_hybrid_keeps_refined_poses_and_moves_the_rest_into_their_frame():
+    rng = np.random.default_rng(0)
+    ff = {f"frames/{i:05d}.png": (Rotation.random(random_state=i).as_matrix(), rng.normal(size=3)) for i in range(12)}
+    # The refined model is the feedforward one under a similarity (bundle adjustment's own gauge).
+    s, r, t = 2.5, Rotation.from_euler("xyz", [20, -35, 60], degrees=True).as_matrix(), np.array([1.0, -2.0, 0.5])
+
+    def moved(rot, tv):
+        center = s * r @ (-rot.T @ tv) + t
+        new = rot @ r.T
+        return new, -new @ center
+
+    refined = {n: moved(*p) for n, p in ff.items()}
+    unconstrained = ["frames/00003.png", "frames/00007.png"]
+    for n in unconstrained:  # what bundle adjustment leaves where it had nothing to go on
+        refined[n] = (np.eye(3), np.zeros(3))
+    out = fallback.hybrid(ff, refined, [n for n in ff if n not in unconstrained])
+    for n in ff:
+        want = moved(*ff[n])
+        assert np.allclose(out[n][0], want[0], atol=1e-9) and np.allclose(out[n][1], want[1], atol=1e-9)
+
+
+def _models(attempt: Path, old_layout=False) -> None:
+    """COLMAP's sparse/0 (+_txt) and a fallback model, each with a marker file."""
+    work = attempt / "poses" / "colmap"
+    for d in ("sparse/0", "sparse/0_txt", "../fallback/model", "../fallback/model_txt"):
+        (work / d).mkdir(parents=True)
+        (work / d / "which").write_text(d)
+    if old_layout:  # before the fallback: model links straight to sparse/0
+        (work / "model").symlink_to("sparse/0")
+        (work / "model_txt").symlink_to("sparse/0_txt")
+    else:
+        (work / "model_colmap").symlink_to("sparse/0")
+        (work / "model_colmap_txt").symlink_to("sparse/0_txt")
+        poses.activate(attempt, "colmap")
+
+
+@pytest.mark.parametrize("old_layout", [False, True])
+def test_activate_switches_the_model_every_stage_reads_and_back(tmp_path, old_layout):
+    _models(tmp_path, old_layout)
+    model_txt = tmp_path / "poses" / "colmap" / "model_txt"
+    assert poses.active_source(tmp_path) == "colmap" and (model_txt / "which").read_text() == "sparse/0_txt"
+    poses.activate(tmp_path, "fallback")
+    assert poses.active_source(tmp_path) == "fallback"
+    assert (model_txt / "which").read_text() == "../fallback/model_txt"
+    poses.activate(tmp_path, "colmap")
+    assert poses.active_source(tmp_path) == "colmap" and (model_txt / "which").read_text() == "sparse/0_txt"
+
+
+def test_gate_takes_the_reprojection_error_of_the_active_cameras(tmp_path):
+    from test_m2 import _ring  # the synthetic orbit
+
+    _models(tmp_path)
+    names = [f"frames/{i:05d}.png" for i in range(90)] + ["hero/hero.png"]
+    qs, ts = _ring(list(np.linspace(0, 356, 90)) + [0.0])
+    for d in ("sparse/0_txt", "../fallback/model_txt"):
+        (tmp_path / "poses" / "colmap" / d / "images.txt").write_text(
+            "".join(f"{i + 1} {' '.join(map(str, q))} {' '.join(map(str, t))} 1 {n}\n\n"
+                    for i, (n, q, t) in enumerate(zip(names, qs, ts))))
+    for n in names:
+        (tmp_path / n).parent.mkdir(exist_ok=True)
+        Image.new("RGB", (4, 4)).save(tmp_path / n)
+    (tmp_path / "metrics.json").write_text(json.dumps({"poses_colmap": {"reproj_err": 2.0},
+                                                       "poses_fallback": {"reproj_err": 0.9}}))
+    with pytest.raises(Rejected, match="reprojection error 2.00"):
+        Gate().execute(tmp_path, None, Ctx())
+    poses.activate(tmp_path, "fallback")
+    ctx = Ctx()
+    Gate().execute(tmp_path, None, ctx)
+    assert ctx.metrics["passed"] is True and ctx.metrics["reproj_err"] == 0.9 and ctx.metrics["poses"] == "fallback"
+
+
+class _Poses(Stage):
+    """COLMAP's stage, reduced to the files the runner and the fallback look for."""
+
+    name = "poses_colmap"
+    inputs = ("frames",)
+    outputs = ("poses/colmap/model",)
+
+    def run(self, attempt, params, ctx):
+        work = attempt / "poses" / "colmap"
+        shutil.rmtree(work, ignore_errors=True)
+        (work / "sparse" / "0").mkdir(parents=True)
+        (work / "sparse" / "0_txt").mkdir()
+        (work / "database.db").write_text("")
+        (work / "model_colmap").symlink_to("sparse/0")
+        (work / "model_colmap_txt").symlink_to("sparse/0_txt")
+        poses.activate(attempt, "colmap")
+
+
+class _Fallback(Stage):
+    name = "poses_fallback"
+    defaults = {"enabled": True}
+    inputs = ("poses/colmap/database.db",)
+    outputs = ("poses/fallback/model",)
+    gpu_mb = 1
+    runs = 0
+
+    def run(self, attempt, params, ctx):
+        _Fallback.runs += 1
+        for d in ("model", "model_txt"):
+            (attempt / "poses" / "fallback" / d).mkdir(parents=True, exist_ok=True)
+
+
+class _PoseGate(Stage):
+    """COLMAP's cameras jump 60 degrees; the fallback's pass unless `fallback_passes` is off."""
+
+    name = "gate"
+    inputs = ("poses/colmap/model_txt", "frames")
+    outputs = ("gate.json",)
+    fallback_passes = True
+
+    def run(self, attempt, params, ctx):
+        if poses.active_source(attempt) == "fallback" and self.fallback_passes:
+            ctx.metric("passed", True)
+            return
+        if gapfill.applied(attempt):
+            raise Rejected("still jumps after the fill")
+        _jumpy_orbit(attempt)
+        raise Rejected("the camera path jumps 60 degrees between two consecutive frames")
+
+
+def _pose_job(tmp_path, monkeypatch, gate):
+    orbit = _Orbit()
+    _Fallback.runs = 0
+    monkeypatch.setattr(stages, "ORBIT", orbit)
+    monkeypatch.setattr(stages, "PIPELINE", [orbit, _Poses(), gate, _Train()])
+    monkeypatch.setattr(stages, "FALLBACK", _Fallback())
+    monkeypatch.setattr(job_mod.server, "is_up", lambda g: False)
+    image = tmp_path / "subject.png"
+    Image.new("RGB", (16, 16), "green").save(image)
+    log: list[str] = []
+    spec = job_mod.JobSpec(image=str(image), want=1, max_attempts=1, seeds=[1])
+    job = asyncio.run(job_mod.Runner(job_mod.Job.create(tmp_path / "jobs", spec, "t"), log.append).run())
+    return job.attempts[0], log
+
+
+def test_job_trains_on_the_fallback_cameras_when_colmaps_fail_the_gate(tmp_path, monkeypatch, fake_comfy):
+    attempt, log = _pose_job(tmp_path, monkeypatch, _PoseGate())
+    assert attempt.status == "passed" and attempt.poses == "fallback" and attempt.filled == []
+    assert _Fallback.runs == 1 and _FakeComfy.prompts == []  # no gap fill needed
+    assert any("trying the pose fallback" in m for m in log)
+
+
+def test_rejected_fallback_goes_back_to_colmap_and_gap_fill(tmp_path, monkeypatch, fake_comfy):
+    gate = _PoseGate()
+    gate.fallback_passes = False
+    attempt, log = _pose_job(tmp_path, monkeypatch, gate)
+    assert any("rejected the pose fallback too; back to COLMAP's cameras" in m for m in log)
+    assert len(_FakeComfy.prompts) == 1  # the fill was planned from COLMAP's jump
+    # After the fill COLMAP ran again, so the fallback got one more try; then the attempt is rejected.
+    assert _Fallback.runs == 2 and attempt.status == "rejected" and attempt.poses == "colmap"
+
+
+# --- video shape, size and crop ---
+
+from giro.api import NewJob  # noqa: E402
+from giro.hero import fit_to_aspect  # noqa: E402
+
+
+def test_hero_keeps_the_chosen_region_at_the_video_aspect(tmp_path):
+    src = tmp_path / "src.png"
+    im = Image.new("RGB", (1000, 800), "black")
+    im.paste((255, 0, 0), (600, 100, 900, 500))  # the subject, right of center
+    im.save(src)
+    centered, removed = fit_to_aspect(src, 768, 1024)  # 600x800 from the middle
+    assert centered.size == (600, 800) and removed == pytest.approx(0.4)
+    region, removed = fit_to_aspect(src, 768, 1024, crop=(0.55, 0.05, 0.95, 0.65))  # zoomed onto the subject
+    assert region.size == (360, 480) and removed == pytest.approx(1 - 360 * 480 / 800_000)
+    assert region.getpixel((180, 240)) == (255, 0, 0)
+
+
+def test_new_job_checks_the_video_size_and_crop():
+    spec = NewJob(orbit={"width": 1344, "height": 768}, crop=[0.1, 0.0, 0.6, 0.9]).spec()
+    assert spec.orbit == {"width": 1344, "height": 768} and spec.crop == [0.1, 0.0, 0.6, 0.9]
+    with pytest.raises(ValueError, match="multiple of 32"):
+        NewJob(orbit={"width": 1000}).spec()
+    with pytest.raises(ValueError, match="crop must be"):
+        NewJob(crop=[0.5, 0.0, 0.4, 1.0]).spec()
+
+
+@pytest.mark.parametrize("frame", [(768, 1024), (1344, 768), (1184, 672), (672, 1184), (896, 896), (736, 1088)])
+def test_fallback_feeds_da3_the_frames_shape_on_its_patch_grid(frame):
+    w, h = fallback.model_size(*frame, 504)
+    assert w % 14 == 0 and h % 14 == 0 and abs(max(w, h) - 504) <= 56
+    assert abs((w / h) / (frame[0] / frame[1]) - 1) < 0.005  # within the worker's 2%, with room to spare
+
+
+def test_a_rerun_leases_no_gpu_for_stages_it_reuses(tmp_path, monkeypatch):
+    orbit = _Orbit()
+    monkeypatch.setattr(stages, "ORBIT", orbit)
+    monkeypatch.setattr(stages, "PIPELINE", [orbit, _Train()])
+    monkeypatch.setattr(job_mod.server, "is_up", lambda g: False)
+    image = tmp_path / "subject.png"
+    Image.new("RGB", (16, 16), "green").save(image)
+    spec = job_mod.JobSpec(image=str(image), want=1, max_attempts=1, seeds=[1])
+    job = asyncio.run(job_mod.Runner(job_mod.Job.create(tmp_path / "jobs", spec, "t"), lambda m: None).run())
+    (attempt,) = job.attempts
+    assert attempt.gpus == {"orbit_video": 1} and orbit.is_current(job.attempt_dir(1), {"seed": 1} | spec.orbit)
+    attempt.status, attempt.gpus = "queued", {}  # rerun, e.g. after new params for a later stage
+    job = asyncio.run(job_mod.Runner(job, lambda m: None).run())
+    assert job.attempts[0].status == "passed" and job.attempts[0].gpus == {}  # the video was reused without a lease
+
+
+def test_a_rejection_after_a_failed_fallback_is_the_gates(tmp_path, monkeypatch, fake_comfy):
+    gate = _PoseGate()
+    gate.fallback_passes = False
+    attempt, _ = _pose_job(tmp_path, monkeypatch, gate)
+    assert attempt.status == "rejected" and attempt.stage == "gate"

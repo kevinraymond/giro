@@ -9,7 +9,7 @@ import json
 import shutil
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -49,9 +49,10 @@ def output_images(done: Done) -> list[dict[str, str]]:
     return sorted((img for out in done.outputs.values() for img in out.get("images", [])), key=lambda x: x["filename"])
 
 
-def prepare_hero(image: Path, attempt: Path, width: int, height: int) -> float:
-    """Write attempt/hero/hero.png at the video's aspect ratio; returns the fraction cropped away."""
-    hero, cropped_frac = fit_to_aspect(image, width, height)
+def prepare_hero(image: Path, attempt: Path, width: int, height: int, crop: Sequence[float] | None = None) -> float:
+    """Write attempt/hero/hero.png at the video's aspect ratio (from the `crop` region of the image,
+    see fit_to_aspect); returns the fraction cropped away."""
+    hero, cropped_frac = fit_to_aspect(image, width, height, crop)
     path = attempt / "hero" / "hero.png"
     path.parent.mkdir(parents=True, exist_ok=True)
     data = io.BytesIO()
