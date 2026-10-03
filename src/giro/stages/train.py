@@ -98,6 +98,21 @@ class Train(Stage):
         # or wisps around the subject (docs/FINDINGS.md, "Masks"). Eval PSNR then scores the subject only.
         "alpha_mode": "transparent",
     }
+    # Brush options that giro passes only when they have a value: from the run
+    # (-p train.max_splats=120000; null leaves it to Brush) or else from `tuned`. They stay
+    # out of `defaults` so that attempts trained before they existed keep their stage key
+    # and are not retrained.
+    optional = {
+        "max_splats": "--max-splats",                  # upper bound on the splat count
+        "growth_stop_iter": "--growth-stop-iter",      # Brush stops adding splats at 15000
+        "match_alpha_weight": "--match-alpha-weight",  # L1 on alpha against the masks (Brush: 0.1)
+        "render_mode": "--render-mode",                # "mip": Mip-Splatting anti-aliasing
+        "lpips_loss_weight": "--lpips-loss-weight",
+        "opac_decay": "--opac-decay",
+    }
+    # Fewer splats means fewer layers to blend in VR, and trained to a cap they score as well as
+    # the uncapped run does after the crop (docs/FINDINGS.md, "Training").
+    tuned = {"max_splats": 80_000, "render_mode": "mip"}
     inputs = ("dataset",)
     outputs = ("train/final.ply",)
     gpu_mb = BRUSH_VRAM_MB
@@ -129,6 +144,11 @@ class Train(Stage):
             "--max-resolution", str(params["max_resolution"]),
             "--seed", str(params["seed"]),
         ]
+        for key, flag in self.optional.items():
+            value = params[key] if key in params else self.tuned.get(key)
+            if value is not None:
+                cmd += [flag, str(value)]
+                ctx.metric(key, value)
         if params["eval_save_to_disk"]:
             cmd.append("--eval-save-to-disk")
         if (attempt / "dataset" / "masks").exists():

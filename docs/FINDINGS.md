@@ -142,6 +142,27 @@ Spirula Studio trained 1.4–1.7× faster, and Brush scored higher on this scene
 one seed, and I did not tune Spirula Studio for generated video with a transparent background.
 giro stays on Brush, which it was built around.
 
+- A sweep of Brush options on three finished seeds (knight, scooter, tank), each scored after the
+  crop: Gaussians kept, splat-transform's fill ratio (about how many layers are blended per pixel,
+  which is what the Quest runs out of) and PSNR on the held-out frames.
+
+| Training | Knight: kept / fill / PSNR | Tank | Scooter |
+|---|---|---|---|
+| Brush defaults | 122K / 62 / 33.5 dB | 156K / 88 / 30.6 dB | 124K / 29 / 23.5 dB |
+| `--max-splats 80000` | 68K / 36 / 34.6 dB | 71K / 40 / 31.1 dB | 57K / 18 / 23.6 dB |
+| `--max-splats 50000` | 44K / 24 / 34.7 dB | 46K / 25 / 30.8 dB | 39K / 14 / 23.6 dB |
+| **80K and `--render-mode mip`** (default) | 70K / 34 / 34.5 dB | 72K / 36 / 31.1 dB | 58K / 18 / 23.6 dB |
+| 10k iterations (45–49 s) | 58K / 25 / 33.1 dB | 80K / 32 / 30.4 dB | 75K / 18 / 23.4 dB |
+| `--match-alpha-weight 1.0` | 256K / 215 / 33.1 dB | 296K / 151 / 30.3 dB | 290K / 127 / 23.4 dB |
+
+- Capping the count halves the layers and costs nothing after the crop: an uncapped run spends
+  a fifth of its Gaussians on near-transparent ones that the crop drops anyway.
+- Train to the cap rather than decimating afterwards. The uncapped knight decimated to 44K scored
+  32.4 dB, against 34.7 dB trained with a 50K cap.
+- A stronger alpha loss doubled the count and the layers for no gain. The LPIPS loss was too slow
+  to use: 200 iterations in 10 minutes.
+- None of this has been compared in the headset yet.
+
 ## Crop
 
 - The visual-hull crop keeps a Gaussian if it lands inside the subject mask in most of the views
