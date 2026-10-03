@@ -67,7 +67,7 @@ export interface AttemptDetail {
   rank: number | null;
   running: boolean;
   metrics: Record<string, Record<string, unknown>>;
-  gate: { passed: boolean; reasons: string[]; checks: GateCheck[]; ring: { azimuths?: number[]; frames?: string[] } } | null;
+  gate: { passed: boolean; reasons: string[]; checks: GateCheck[]; ring: { azimuths?: number[]; frames?: string[]; azimuth_span?: number; azimuth_coverage?: number } } | null;
   dedup: Record<string, unknown> | null;
   files: Record<string, number>;
   previews: string[];

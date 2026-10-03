@@ -63,7 +63,7 @@ export type Tone = "good" | "bad" | "warn" | "active" | "muted";
 
 // Gate metrics as the UI shows them: short name, unit, and how to print a value.
 export const METRICS: Record<string, { label: string; fmt: (v: number) => string; help: string }> = {
-  azimuth_coverage: { label: "Orbit", fmt: (v) => `${v.toFixed(0)}°`, help: "How far the camera went around the subject" },
+  azimuth_coverage: { label: "Orbit", fmt: (v) => `${v.toFixed(0)}°`, help: "How far around the subject the camera got, start to end (net)" },
   n_views: { label: "Views", fmt: (v) => `${v}`, help: "Frames that got a camera pose" },
   reg_rate: { label: "Posed", fmt: (v) => `${(v * 100).toFixed(0)}%`, help: "Share of the images that got a camera pose" },
   reproj_err: { label: "Reproj.", fmt: (v) => `${v.toFixed(2)} px`, help: "Reprojection error: how consistent the frames are geometrically" },
@@ -74,11 +74,15 @@ export const METRICS: Record<string, { label: string; fmt: (v: number) => string
   hero_registered: { label: "Hero", fmt: (v) => (v ? "posed" : "missing"), help: "Whether the hero image got a camera pose" },
 };
 
-export function checkText(c: GateCheck): string {
+export function checkText(c: GateCheck, ring?: { azimuth_span?: number }): string {
   const m = METRICS[c.metric];
   if (c.value === null || c.value === undefined) return "not measured";
   if (typeof c.value === "boolean") return c.value ? "yes" : "no";
-  const v = m ? m.fmt(c.value) : String(c.value);
+  let v = m ? m.fmt(c.value) : String(c.value);
+  // The orbit check is on the net angle (where the camera ended up relative to the start). A camera
+  // that swings out and back nets ~0 while having seen a wider range: say both, or the row reads as a bug.
+  const span = ring?.azimuth_span;
+  if (c.metric === "azimuth_coverage" && typeof span === "number" && Math.abs(span - c.value) >= 1) v = `${v} net, saw ${span.toFixed(0)}°`;
   if (typeof c.threshold === "boolean") return v;
   const t = m ? m.fmt(c.threshold) : String(c.threshold);
   return `${v} (${c.op === ">=" ? "need ≥" : "allowed ≤"} ${t})`;

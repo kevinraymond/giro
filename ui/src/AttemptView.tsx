@@ -209,7 +209,7 @@ function OrbitTab({ detail }: { detail: AttemptDetail }) {
                 <tr key={c.metric} className={c.pass ? "" : "fail"} title={METRICS[c.metric]?.help}>
                   <td>{c.pass ? "✓" : "✗"}</td>
                   <td>{METRICS[c.metric]?.help ?? c.metric}</td>
-                  <td className="num">{checkText(c)}</td>
+                  <td className="num">{checkText(c, detail.gate?.ring)}</td>
                 </tr>
               ))}
             </tbody>

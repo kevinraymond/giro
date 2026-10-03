@@ -77,7 +77,8 @@ CHECKS: list[tuple[str, str, str, str]] = [
     ("reproj_err", "<=", "max_reproj_err",
      "the frames are geometrically inconsistent: reprojection error {value:.2f} px (need at most {threshold})"),
     ("azimuth_coverage", ">=", "min_azimuth_coverage",
-     "the camera covers only {azimuth_span:.0f} degrees around the subject (need {threshold:.0f})"),
+     "the camera covers only {azimuth_span:.0f} degrees around the subject and ends {value:.0f} degrees "
+     "from where it started (need {threshold:.0f} net)"),
     ("azimuth_monotonic", ">=", "min_azimuth_monotonic",
      "the camera does not move steadily one way: only {value:.0%} of steps go forward (need {threshold:.0%})"),
     ("max_step_deg", "<=", "max_step_deg",
