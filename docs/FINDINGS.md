@@ -167,8 +167,20 @@ giro stays on Brush, which it was built around.
 - I expected 400–600K splats at 72 Hz, based on Spark's guidance and native apps.
 - In a first pass in the Quest browser (Spark 2.2, 90 Hz, SH degree 3), head motion already
   stuttered at 245K. The comfortable budget may be nearer 150K.
-- The measurement was noisy: my head was moving, and another tab may have been open. Still to try:
-  72 Hz, a lower framebuffer scale, lower SH degrees and Spark's level of detail.
+- That measurement was noisy: my head was moving, and another tab may have been open.
+- A controlled pass (head still, 72 Hz, crowds of the knight 1.5 m away filling the view) showed
+  the page is bound by fill rate, not by SH degree. At full resolution 245K ran at 32 fps with SH
+  degree 3 and 34 fps with degree 1 or 0.
+
+| Framebuffer scale, `maxStdDev` | 123K | 245K | 490K |
+|---|---|---|---|
+| 1.0, 2.83 (Spark's default) | – | 32 fps | 18 fps |
+| 0.6, 2.83 | – | 56 fps | – |
+| 0.6, 2.0 | 72 fps | 70 fps | 35 fps |
+
+- So the VR page defaults to 72 Hz, scale 0.6 and `maxStdDev` 2.0, and the export budget is 150K
+  Gaussians per subject. Published Quest budgets of 500K to 1M are for whole scenes; one subject
+  filling the view at arm's length costs more per Gaussian.
 
 ## Gotchas
 

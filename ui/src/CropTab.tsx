@@ -126,7 +126,7 @@ export function CropTab({ detail, stages }: { detail: AttemptDetail; stages: Sta
     );
   }
   const exp = detail.metrics.export ?? {};
-  const budget = Number(exp.vr_budget ?? 500000);
+  const budget = Number(exp.vr_budget ?? 150000);
   const sentBox = boxOn && box ? box.map((x) => Math.round(x * 1000) / 1000) : null; // mm, as applied
   const changed = tau !== applied.tau || Number(height) !== applied.height ||
     JSON.stringify(sentBox) !== JSON.stringify(applied.box);

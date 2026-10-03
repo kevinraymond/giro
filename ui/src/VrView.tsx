@@ -46,10 +46,11 @@ export default function VrView({ items }: { items: VrItem[] }) {
 
   useEffect(() => {
     const el = host.current!;
-    // Options: ?hz=72 asks the headset for that refresh rate; ?scale=0.75 renders fewer pixels.
+    // Options: ?hz=90 asks the headset for that refresh rate; ?scale=1 renders every pixel.
+    // The defaults are what held 72 fps on the Quest 3 (docs/FINDINGS.md, "VR on Quest 3").
     const opts = new URLSearchParams(location.hash.split("?")[1] ?? "");
-    const targetHz = opts.get("hz") ? Number(opts.get("hz")) : null;
-    const scale = Number(opts.get("scale") ?? 1);
+    const targetHz = Number(opts.get("hz") ?? 72);
+    const scale = Number(opts.get("scale") ?? 0.6);
     const renderer = new THREE.WebGLRenderer({ antialias: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     el.appendChild(renderer.domElement);
@@ -57,7 +58,9 @@ export default function VrView({ items }: { items: VrItem[] }) {
     scene.background = new THREE.Color(0x101214);
     const spark = new SparkRenderer({ renderer });
     scene.add(spark);
-    const defaultStdDev = spark.maxStdDev;
+    // How far out each Gaussian is drawn: Spark's default sqrt(8) costs fill for little visible gain.
+    const defaultStdDev = Number(opts.get("std") ?? 2);
+    spark.maxStdDev = defaultStdDev;
 
     // Controllers move the camera's parent: the rig.
     const rig = new THREE.Group();

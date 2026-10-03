@@ -7,8 +7,8 @@
 `box` (min and max corners in meters, in the canonical frame: y up, feet at 0) trims
 what the auto-crop left, e.g. a stand or a stray patch of floor; it never rescales.
 
-Spark's guidance for Quest 3 standalone is at most ~500K splats (docs/FINDINGS.md, "VR on Quest 3").
-Above `vr_budget`, a decimated splat.vr.sog is written as well.
+The Quest 3 browser is fill-bound: one subject filling the view holds 72 Hz at about 150K splats
+(docs/FINDINGS.md, "VR on Quest 3"). Above `vr_budget`, a decimated splat.vr.sog is written as well.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from giro.stages.base import Ctx, Stage, StageFailed
 
 class Export(Stage):
     name = "export"
-    defaults = {"formats": ["sog", "spz"], "vr_budget": 500_000, "box": None}
+    defaults = {"formats": ["sog", "spz"], "vr_budget": 150_000, "box": None}
     inputs = ("canonical/splat.ply",)
     outputs = ("export/splat.ply",)
 
