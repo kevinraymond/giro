@@ -176,6 +176,13 @@ including what it says about outputs, before use.
 | [Spark](https://github.com/sparkjsdev/spark), [three.js](https://threejs.org) | Web and WebXR viewer | MIT |
 | [FFmpeg](https://ffmpeg.org) | Frame extraction | LGPL/GPL |
 
+**MiniMax H3's license is restrictive; read it before you run giro.** As of October 2026 it
+grants use only outside its "Excluded Territories" (the European Union, the United Kingdom, the
+Republic of Korea and the United States), and asks people there to contact MiniMax for a license.
+It also requires a "Powered by MiniMax H3" notice on products built with it, and it does not allow
+using outputs to improve other AI models. This is a summary, not legal advice. The orbit step is
+the only part of giro that depends on H3.
+
 The sample subjects were generated with [Z-Image Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo)
 and [Qwen-Image-2512](https://huggingface.co/Qwen/Qwen-Image-2512) with its
 [Lightning LoRA](https://huggingface.co/lightx2v/Qwen-Image-2512-Lightning), all Apache-2.0.
