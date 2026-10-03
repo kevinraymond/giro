@@ -74,6 +74,12 @@ class OrbitVideo(Stage):
         "seed": None,  # required; the caller picks it so the attempt is reproducible
         "keep_loaded": False,
     }
+    # Also read when a run sets them, and left out of `defaults` so older attempts keep their
+    # stage key: "lora" (a file under ComfyUI's loras folder; null for none), "lora_strength"
+    # (default 1.0), "model" ("h3", the default, or "wan22") and, for Wan's low-noise model, "lora_low".
+    # With H3 and no "lora" given, the 360 orbit LoRA is used, with the prompt it was trained on
+    # in place of giro's stock prompt (docs/FINDINGS.md, "Orbit videos").
+    tuned = {"lora": "h3/minimax_h3_flf2v_orbit360_pablodawson_v1.safetensors"}
     inputs = ("hero/hero.png",)
     outputs = ("frames_raw", "video.mp4", "orbit.json")
     gpu_mb = ORBIT_VRAM_MB
@@ -103,9 +109,15 @@ class OrbitVideo(Stage):
 
     async def _sample(self, url: str, device: int, attempt: Path, params: dict[str, Any], ctx: Ctx) -> None:
         frames_dir, previews_dir = attempt / "frames_raw", attempt / "previews"
-        length = workflows.snap_length(params["length"])
+        model = params.get("model") or "h3"
+        length = workflows.snap_length(params["length"], model)
+        loras = {"lora": params["lora"] if "lora" in params else (self.tuned["lora"] if model == "h3" else None),
+                 "lora_low": params.get("lora_low")}
+        text = params["prompt"]
+        if loras["lora"] == self.tuned["lora"] and text == workflows.ORBIT_PROMPT:
+            text = workflows.FROZEN_ORBIT_PROMPT
         wf = {
-            "prompt": params["prompt"], "width": params["width"], "height": params["height"],
+            "prompt": text, "width": params["width"], "height": params["height"],
             "length": length, "seed": params["seed"], "steps": params["steps"],
             "output_prefix": f"giro/{time.strftime('%Y%m%d-%H%M%S')}-{params['seed']}/frame",
         }
@@ -117,7 +129,13 @@ class OrbitVideo(Stage):
                 t0 = time.monotonic()
                 n_previews = 0
                 done: Done | None = None
-                async for event in events(comfy, workflows.build("orbit_video", **wf), ctx):
+                prompt = workflows.build_orbit(model, **wf)
+                strength = float(params.get("lora_strength") or 1.0)
+                for key, loader in (("lora", "unet"), ("lora_low", "unet_low")):
+                    if loras[key]:
+                        workflows.with_lora(prompt, loras[key], strength, loader)
+                        ctx.log(f"LoRA {loras[key]}")
+                async for event in events(comfy, prompt, ctx):
                     if isinstance(event, NodeStarted):
                         ctx.log(f"node {event.node} ({event.class_type}) at {time.monotonic() - t0:.0f}s")
                     elif isinstance(event, Progress):
@@ -143,11 +161,12 @@ class OrbitVideo(Stage):
                     await comfy.free()
 
         await asyncio.to_thread(subprocess.run, [
-            "ffmpeg", "-loglevel", "error", "-y", "-framerate", "24", "-i", str(frames_dir / "%05d.png"),
+            "ffmpeg", "-loglevel", "error", "-y", "-framerate", "16" if model == "wan22" else "24", "-i", str(frames_dir / "%05d.png"),
             "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", str(attempt / "video.mp4"),
         ], check=True)
         (attempt / "orbit.json").write_text(json.dumps({
-            "params": {k: v for k, v in wf.items() if k != "image"}, "gpu": device,
+            "params": {k: v for k, v in wf.items() if k != "image"} | {k: v for k, v in loras.items() if v},
+            "model": model, "gpu": device,
             "seconds": round(seconds, 1), "frames": len(images),
         }, indent=2) + "\n")
         ctx.metric("seed", params["seed"])

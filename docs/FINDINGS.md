@@ -29,6 +29,27 @@ Clip-length sweep, one subject, 4 seeds per setting:
 
 With n = 4, only 124 × 8 is clearly worse. A seed that passes at one setting can fail at another.
 
+An orbit LoRA changed this more than any setting. With the
+[360 orbit LoRA](https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA) and the prompt it
+was trained on, seeds 1–4 with no rerolls:
+
+| Subject, video | Pass rate | Video time | Views | Without the LoRA |
+|---|---|---|---|---|
+| Adventurer, 768×768, 73 frames, 28 steps | 4/4 | 142 s | 66 | – |
+| Adventurer, 768×1024, 158 frames, 20 steps | 4/4 | 437 s | 103 | 3/4 |
+| Tank, 1024×768, 158 frames, 20 steps | 4/4 | 424 s | 104 | 1 of 3 |
+
+- The LoRA was trained on orbits of people only, yet the tank, which filled the frame and had
+  failed most seeds, passed every time, with a level ring and a rear that reads as a tank.
+- With it, the video moves from the first frame: dedup trimmed 1–2 frames at the start instead of
+  about 16. giro now uses it by default.
+- The top and the underside are still invented: the orbit stays at eye level.
+- Wan 2.2 (image-to-video 14B, Apache-2.0) with an
+  [orbit LoRA](https://huggingface.co/ostris/wan22_i2v_14b_orbit_shot_lora), first and last frame
+  pinned, 576×768 and 81 frames, passed 0 of 4 on the adventurer at 441 s per clip. One clip looked
+  like an orbit, but the room changed from wall to wall and the satchel swapped hips. Another
+  turned the subject twice in a still room. It stays as `model=wan22` for comparisons.
+
 ## The quality gate
 
 Failure modes seen, and the check that caught each one:

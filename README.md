@@ -128,7 +128,8 @@ scripts/setup_comfy.sh                  # pinned headless ComfyUI in vendor/
 scripts/setup_brush.sh                  # pinned Brush
 scripts/setup_splat_transform.sh        # pinned splat-transform
 scripts/setup_da3.sh                    # optional pose fallback (Depth Anything 3)
-# point scripts/extra_model_paths.yaml at your models
+# point scripts/extra_model_paths.yaml at your models; the orbit LoRA goes in
+# loras/h3/minimax_h3_flf2v_orbit360_pablodawson_v1.safetensors (or pass -p orbit_video.lora=null)
 cd ui && npm ci && npm run build && cd ..
 
 uv run giro serve                       # UI on http://<host>:8470
@@ -166,6 +167,7 @@ including what it says about outputs, before use.
 |---|---|---|
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Headless inference server (over HTTP) | GPL-3.0 |
 | [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) ([ComfyUI files](https://huggingface.co/Comfy-Org/MiniMax-H3)) | Orbit video | [MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) |
+| [MiniMax-H3 360° Orbit LoRA](https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA) | Orbit video (on by default) | MiniMax H3 Community License |
 | [Qwen-Image-Edit-2511](https://huggingface.co/Qwen/Qwen-Image-Edit-2511) ([ComfyUI files](https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI), [Lightning LoRA](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning)) | Background edit | Apache-2.0 |
 | [SAM 3.1](https://huggingface.co/facebook/sam3.1) ([ComfyUI files](https://huggingface.co/Comfy-Org/sam3.1)) | Subject masks | [SAM License](https://huggingface.co/Comfy-Org/sam3.1/blob/main/LICENSE) |
 | [COLMAP](https://colmap.github.io) | Camera poses | BSD-3-Clause |
