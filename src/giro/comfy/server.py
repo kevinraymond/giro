@@ -60,6 +60,8 @@ def start(gpu: int, timeout: float = 120.0) -> str:
             "--extra-model-paths-config", str(MODEL_PATHS),
             "--preview-method", "latent2rgb", "--preview-size", "1024",
             "--disable-auto-launch",
+            # GIRO_COMFY_SAGE=1: SageAttention kernels (scripts/comfy-lock.txt), for Wan's long videos
+            *(["--use-sage-attention"] if os.environ.get("GIRO_COMFY_SAGE") == "1" else []),
         ],
         cwd=COMFY_DIR, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
     )

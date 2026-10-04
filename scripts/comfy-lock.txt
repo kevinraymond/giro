@@ -79,6 +79,8 @@ regex==2026.2.19
 requests==2.32.5
 rich==14.3.3
 safetensors==0.8.0
+sageattention==1.0.6
+    # giro: Triton attention kernels for Wan (ComfyUI --use-sage-attention); BSD-3-Clause
 scipy==1.17.1
 sentencepiece==0.2.1
 setuptools==81.0.0
