@@ -85,11 +85,11 @@ export function NewJob() {
   const [subject, setSubject] = useState("");
   const [length, setLength] = useState("");
   const [steps, setSteps] = useState("");
-  const [mode, setMode] = useState<"h3" | "proxy">("h3");
+  const [mode, setMode] = useState<"h3" | "proxy">("proxy");
   const [path, setPath] = useState("spiral");
   const [seeds, setSeeds] = useState("");
   const [shape, setShape] = useState("3:4");
-  const [size, setSize] = useState("standard");
+  const [size, setSize] = useState("draft");
   const [customW, setCustomW] = useState("768");
   const [customH, setCustomH] = useState("1024");
   const [view, setView] = useState<View>(CENTERED);
@@ -183,11 +183,10 @@ export function NewJob() {
     }
     if (length) orbitParams.length = Number(length);
     if (steps) orbitParams.steps = Number(steps);
-    const orbitAll: Record<string, number | string> = { ...orbitParams };
+    // The model is always sent: the server's default (the proxy orbit) is not the only choice.
+    const orbitAll: Record<string, number | string> = { ...orbitParams, model: mode === "proxy" ? "wan22-control" : "h3" };
     if (mode === "proxy") {
-      orbitAll.model = "wan22-control";
       orbitAll.path = path;
-      orbitAll.length ??= 81;
       orbitAll.width = vw;
       orbitAll.height = vh;
     }
@@ -224,7 +223,7 @@ export function NewJob() {
         <h1>New job</h1>
         <p className="muted">
           One image of a subject in, a cropped and upright Gaussian splat out. giro generates several orbit videos,
-          keeps the ones whose cameras make a clean circle, and ranks them.
+          keeps the ones whose cameras check out, and ranks them.
         </p>
       </header>
 
@@ -318,13 +317,13 @@ export function NewJob() {
               setMode(m);
               setSize(m === "proxy" ? "draft" : "standard");
             }}>
+              <option value="proxy">Proxy orbit: a 3D proxy guides Wan 2.2 Fun Control (default)</option>
               <option value="h3">MiniMax H3 with the 360 orbit LoRA</option>
-              <option value="proxy">Proxy orbit: TripoSplat proxy, Wan 2.2 Fun Control (experimental)</option>
             </select>
             <small className="muted">
               {mode === "h3"
-                ? "The best tested quality. MiniMax H3's license excludes users in the US, EU, UK and South Korea."
-                : "A rough 3D proxy of the subject sets the camera path, so the views from above are real; permissively licensed models. Quality is still being measured."}
+                ? "Keeps the hero's look around the subject a little better, but MiniMax H3's license excludes users in the US, EU, UK and South Korea."
+                : "A rough 3D proxy of the subject sets the camera path, so the views from above are real. As good as H3 or better on the hero view, sharper, and its models allow commercial use everywhere."}
             </small>
           </label>
           <div className="field-row">

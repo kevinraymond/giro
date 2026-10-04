@@ -60,12 +60,15 @@ def _stage_params(args: argparse.Namespace) -> dict[str, dict[str, object]]:
 
 
 def _orbit_params(args: argparse.Namespace) -> dict[str, object]:
-    params: dict[str, object] = {"prompt": args.prompt, "width": args.width, "height": args.height,
-                                 "length": args.length, "steps": args.steps, "keep_loaded": args.keep_loaded}
-    for key in ("model", "path", "turns", "pitch_end"):  # left out unless given: older attempts keep their key
-        if getattr(args, key, None) is not None:
-            params[key] = getattr(args, key)
-    return params
+    """The orbit params a new attempt or job gets: the default model and its size and length unless
+    given (stages.new_orbit), then orbit_video's own defaults."""
+    given: dict[str, object] = {"prompt": args.prompt, "width": args.width, "height": args.height,
+                                "length": args.length, "steps": args.steps, "keep_loaded": args.keep_loaded}
+    for key in ("model", "path", "turns", "pitch_end"):
+        given[key] = getattr(args, key, None)
+    orbit = stages.new_orbit(given)
+    return {k: orbit.get(k, stages.ORBIT.defaults.get(k)) for k in ("prompt", "width", "height", "length", "steps",
+                                                                     "keep_loaded")} | orbit
 
 
 def _attempt_model(attempt: Path) -> str | None:
@@ -76,13 +79,15 @@ def _attempt_model(attempt: Path) -> str | None:
 
 def _prepare_attempt(args: argparse.Namespace) -> dict[str, object]:
     """Hero and orbit params for a single attempt directory (`orbit` and `run`)."""
-    cropped = prepare_hero(args.image, args.out, args.width, args.height)
+    orbit = _orbit_params(args)
+    width, height = int(orbit["width"]), int(orbit["height"])  # type: ignore[call-overload]
+    cropped = prepare_hero(args.image, args.out, width, height)
     if cropped > 0.01:
-        _log(f"warning: hero cropped to {args.width}:{args.height}, {cropped:.0%} of the image removed")
+        _log(f"warning: hero cropped to {width}:{height}, {cropped:.0%} of the image removed")
     seed = args.seed
     if seed is None and (args.out / "orbit.json").exists():
         seed = json.loads((args.out / "orbit.json").read_text())["params"]["seed"]  # rerun the same video
-    return _orbit_params(args) | {"seed": seed if seed is not None else random.randrange(2**32)}
+    return orbit | {"seed": seed if seed is not None else random.randrange(2**32)}
 
 
 def orbit(args: argparse.Namespace) -> int:
@@ -247,14 +252,16 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     def video_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--width", type=int, default=768)
-        p.add_argument("--height", type=int, default=1024)
-        p.add_argument("--length", type=int, default=158, help="frames at 24 fps (snapped to 17k+5); see docs/FINDINGS.md, Orbit videos")
+        p.add_argument("--width", type=int, help="default 576 (proxy orbit) or 768 (h3)")
+        p.add_argument("--height", type=int, help="default 768 (proxy orbit) or 1024 (h3)")
+        p.add_argument("--length", type=int, help="frames: default 81 at 16 fps (proxy orbit, 4k+1) or 158 at 24 fps "
+                                                  "(h3, 17k+5); see docs/FINDINGS.md")
         p.add_argument("--steps", type=int, default=20)
         p.add_argument("--prompt", default=workflows.ORBIT_PROMPT)
         p.add_argument("--keep-loaded", action="store_true", help="leave models in VRAM for the next run")
         p.add_argument("--model", choices=sorted(workflows.ORBIT_MODELS),
-                       help="video model (default h3); wan22-control is the proxy orbit")
+                       help=f"video model (default {stages.DEFAULT_MODEL}, the proxy orbit); h3 is MiniMax H3 with the "
+                            "360 orbit LoRA, whose license excludes the US, EU, UK and Korea")
         p.add_argument("--path", choices=campath.PRESETS, help="proxy orbit: camera path (default spiral)")
         p.add_argument("--turns", type=float, help="proxy orbit: turns around the subject (default 2)")
         p.add_argument("--pitch-end", type=float, help="proxy orbit: final elevation in degrees (default 45)")

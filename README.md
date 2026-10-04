@@ -3,7 +3,7 @@
 **One image in, a cropped Gaussian splat you can walk around in VR out.**
 
 > **Experimental research prototype.** A personal learning project, not a product. It runs on one
-> machine for one user, needs two 24 GB GPUs, and changes often. The numbers in
+> machine for one user, needs a 24 GB GPU (two for the MiniMax H3 orbit), and changes often. The numbers in
 > [docs/FINDINGS.md](docs/FINDINGS.md) come from a handful of subjects and seeds: lab notes, not
 > benchmarks.
 
@@ -37,14 +37,14 @@ Passing seeds are ranked by held-out PSNR.
 
 There are two ways to make the orbit:
 
-- **MiniMax H3 with a 360° orbit LoRA** (the default): the hero is the first and last frame of a
+- **The proxy orbit** (the default since Oct 4, 2026; permissively licensed models): TripoSplat
+  turns the hero into a rough 3D *proxy*, giro renders the proxy's depth along a camera path it
+  chooses (a spiral rising to 45°, starting at the hero's own camera), and Wan 2.2 Fun Control
+  repaints that path with the hero as the first frame. The cameras are known, so COLMAP only
+  refines them, and the views from above are real views instead of guesses. SeedVR2 then doubles
+  the frames' resolution before training.
+- **MiniMax H3 with a 360° orbit LoRA** (`--model h3`): the hero is the first and last frame of a
   generated orbit, and COLMAP recovers the cameras. Its license excludes the US, EU, UK and Korea.
-- **The proxy orbit** (`--model wan22-control`, experimental, permissively licensed models):
-  TripoSplat turns the hero into a rough 3D *proxy*, giro renders the proxy's depth along a camera
-  path it chooses (a spiral rising to 45°, starting at the hero's own camera), and Wan 2.2 Fun
-  Control repaints that path with the hero as the first frame. The cameras are known, so COLMAP
-  only refines them, and the views from above are real views instead of guesses. SeedVR2 then
-  doubles the frames' resolution before training.
 
 The rest follows from there. Masking the subject before COLMAP rescues "turntable" videos. Brush
 trains with a transparent background. The **crop** keeps Gaussians that land inside the subject
@@ -135,18 +135,19 @@ The details are in [docs/FINDINGS.md](docs/FINDINGS.md).
 - Measure on the hero view. Brush's held-out PSNR scores a video against itself, and a blurrier
   video can score higher. `scripts/evaluate.py` scores the hero view, sharpness and likeness.
 
-**Where it stands (Oct 4, 2026).** The proxy orbit is worth making the default for a public tool:
-anyone can use its models, and its quality is on par with H3's or better except for how faithfully
-the shape of hard-surface subjects comes through. It still needs a better proxy for those, more
-seeds than one per subject, and a check of its denser splats (up to 150K) in the headset. Details
+**Where it stands (Oct 4, 2026).** The proxy orbit is now the default: anyone can use its models,
+it passed the gate on its first try in 14 of 14 runs across five subjects and three seeds, and its
+quality is on par with H3's or better except for how faithfully the shape of hard-surface subjects
+comes through. Pixal3D (MIT) as the proxy fixed the tank's shape in a first test; it needs a newer
+ComfyUI than giro pins. Its denser splats (up to 150K) still need a check in the headset. Details
 and the open questions are in [FINDINGS](docs/FINDINGS.md#proxy-orbit).
 
 ## Running it
 
 giro is shared to read and learn from. It is not packaged for easy installation. You will need:
 
-- Linux with two 24 GB NVIDIA GPUs (the H3 video alone peaks at about 22 GB), or one for the proxy
-  orbit, whose steps run one after another on a single card in about 20 minutes per seed.
+- Linux with a 24 GB NVIDIA GPU: the proxy orbit's steps run one after another on one card, about
+  20 minutes per seed. The H3 orbit's video alone peaks at about 22 GB, so it wants a second card.
 - Python 3.12 with [uv](https://docs.astral.sh/uv/), Node.js, Rust, FFmpeg, and COLMAP 4.x with CUDA.
 - The model weights, which you supply (see [Third-party software and models](#third-party-software-and-models)).
 
@@ -161,9 +162,8 @@ scripts/setup_da3.sh                    # optional pose fallback (Depth Anything
 cd ui && npm ci && npm run build && cd ..
 
 uv run giro serve                       # UI on http://<host>:8470
-uv run giro run image.png -o data/try1  # or one seed from the CLI
-uv run giro run image.png -o data/try2 --model wan22-control --width 576 --height 768 --length 81 --gpu 0
-                                        # the proxy orbit, on one GPU
+uv run giro run image.png -o data/try1 --gpu 0  # or one seed from the CLI (the proxy orbit)
+uv run giro run image.png -o data/try2 --model h3          # MiniMax H3 instead
 uv run giro job export data/jobs/<job>  # a job as one zip: offline HTML report + PLY/SOG/SPZ
 ```
 

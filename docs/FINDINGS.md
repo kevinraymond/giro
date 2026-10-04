@@ -150,16 +150,33 @@ Against H3 with the orbit LoRA, both trained the same way (150K splats, 60K iter
   now keeps the path's cameras unadjusted: the video follows them closely (silhouette IoU 0.95 per
   elevation band), and the scooter trained clean.
 
+Seeds 2 and 3 on the knight, raincoat and scooter all passed on their first try (hero PSNR / LPIPS,
+seeds 1, 2, 3; H3, seed 1, in brackets):
+
+| Subject | Hero view | Sharpness ring | Likeness ring |
+|---|---|---|---|
+| Knight (21.3 / 0.071) | 22.1 / 0.057, 22.6 / 0.056, 22.6 / 0.053 | 0.52, 0.55, 0.54 (0.38) | 0.82, 0.78, 0.81 (0.89) |
+| Raincoat (20.8 / 0.048) | 20.0 / 0.046, 20.8 / 0.046, 20.0 / 0.050 | 0.58, 0.57, 0.59 (0.43) | 0.47, 0.54, 0.51 (0.55) |
+| Scooter (19.4 / 0.077) | 18.9 / 0.079, 19.4 / 0.075, 20.7 / 0.062 | 0.48, 0.42, 0.50 (0.46) | 0.66, 0.66, 0.64 (0.80) |
+
+With the current code every proxy orbit passed the gate on its first try: 14 of 14.
+
+A better proxy. Pixal3D and TRELLIS.2 (both MIT, native in ComfyUI from v0.34) make a mesh,
+which giro samples into surface Gaussians. On the tank, Pixal3D's proxy had the right shape
+(hull, side skirts, rear) where TripoSplat's was boxy, and the splat came out with the best hero
+view yet (19.3 dB / 0.040) and more of the hero's look around the ring (0.67 against 0.58; H3:
+0.89). A score of the proxy alone (DINOv2 likeness of its renders around the ring) correlates
+0.70 with the final splat's, but it also scores the proxy's colors, which do not reach the video.
+
 Where it stands, and what is next (Oct 4):
 
-- Worth making the default for a public tool: the license question goes away, the hero view is as
-  good or better, the splats are sharper and the top is real coverage. Not done: the shapes of
-  hard-surface subjects are the proxy's, measured with one seed per subject (two for the adventurer
-  and the tank).
-- Next: a better proxy for hard surfaces (TRELLIS, MIT, gives Gaussians directly; Step1X-3D,
-  Apache-2.0; TripoSG, MIT, geometry only, is enough for depth), the 135K-splat exports in the
-  headset, more seeds, and a way to make chained clips agree (render the first splat into the
-  later clips as kept content, as VideoFrom3D does, or per-image appearance in training).
+- The proxy orbit became giro's default on Oct 4: the license question goes away, the hero view is
+  as good or better, the splats are sharper, the top is real coverage, and 14 of 14 runs passed.
+  Not done: the shapes of hard-surface subjects are TripoSplat's.
+- Next: Pixal3D as the proxy, which means moving giro's pinned ComfyUI from v0.31.1 to v0.38 (the
+  whole pipeline ran on v0.38.2 for the tank); the 135K-splat exports in the headset; and a way to
+  make chained clips agree (render the first splat into the later clips as kept content, as
+  VideoFrom3D does, or per-image appearance in training).
 
 ## The quality gate
 

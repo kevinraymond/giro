@@ -40,6 +40,21 @@ PROXY_PARAMS: dict[str, dict] = {
 BY_NAME: dict[str, Stage] = {s.name: s for s in [PROXY, *PIPELINE]}
 
 
+# The orbit model new jobs get (Oct 4, 2026: the proxy orbit; docs/FINDINGS.md, "Proxy orbit").
+# It is written into each new job's orbit params, so attempts from before the switch, which
+# recorded no model, stay MiniMax H3 (orbit_video's own fallback).
+DEFAULT_MODEL = PROXY_MODEL
+# Each model's size and length where it differs from orbit_video's defaults (H3's).
+MODEL_ORBIT_DEFAULTS: dict[str, dict] = {PROXY_MODEL: {"width": 576, "height": 768, "length": 81}}
+
+
+def new_orbit(orbit: dict) -> dict:
+    """A new job's orbit params: the default model unless one is given, and that model's size and
+    length where the user set none."""
+    model = orbit.get("model") or DEFAULT_MODEL
+    return MODEL_ORBIT_DEFAULTS.get(model, {}) | {k: v for k, v in orbit.items() if v is not None} | {"model": model}
+
+
 def pipeline(model: str | None) -> list[Stage]:
     """The stages of an attempt whose orbit video comes from `model` (None: H3)."""
     return [PROXY, *PIPELINE] if model == PROXY_MODEL else PIPELINE
@@ -58,5 +73,5 @@ FALLBACK = PoseFallback()
 # poses and gate run again on the filled frames (not part of PIPELINE).
 GAPFILL = GapFill()
 
-__all__ = ["BY_NAME", "EDIT", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "PROXY", "PROXY_MODEL", "Cancelled", "Ctx",
+__all__ = ["BY_NAME", "DEFAULT_MODEL", "EDIT", "new_orbit", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "PROXY", "PROXY_MODEL", "Cancelled", "Ctx",
            "Rejected", "Stage", "StageFailed", "gapfill", "mode_params", "pipeline", "poses"]

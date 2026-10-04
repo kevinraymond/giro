@@ -130,3 +130,14 @@ def test_refine_sigmas_start_at_the_asked_noise_level_on_the_shifted_schedule():
                                     proxy="/x.ply", cameras="[]", length=81, output_prefix="o")
     assert prompt["condition"]["inputs"]["width"] == prompt["depth"]["inputs"]["width"] == prompt["frames_in"]["inputs"]["width"] == 768
     assert prompt["sample"]["inputs"]["latent_image"] == ["encode", 0]
+
+
+def test_new_jobs_get_the_proxy_orbit_and_old_attempts_stay_h3():
+    orbit = stages.new_orbit({"steps": 20, "width": None})
+    assert orbit["model"] == stages.DEFAULT_MODEL == stages.PROXY_MODEL
+    assert (orbit["width"], orbit["height"], orbit["length"]) == (576, 768, 81)
+    assert stages.new_orbit({"model": "wan22-control", "width": 768, "height": 576})["width"] == 768
+    h3 = stages.new_orbit({"model": "h3"})
+    assert h3 == {"model": "h3"}  # H3's size and length come from orbit_video's defaults
+    # an attempt that recorded no model (all of them before the switch) is H3
+    assert stages.pipeline(None) is stages.PIPELINE and stages.mode_params(None, "dataset") == {}
