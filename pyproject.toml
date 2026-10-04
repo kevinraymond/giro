@@ -30,6 +30,12 @@ dev = [
     "httpx2>=2.13.1",
     "pytest>=9.1.1",
 ]
+# scripts/evaluate.py: LPIPS and DINOv2 scores (uv run --group eval scripts/evaluate.py ...)
+eval = [
+    "lpips",
+    "torch",
+    "transformers",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
