@@ -1,0 +1,154 @@
+{
+ "frames": {
+  "class_type": "GiroLoadImages",
+  "inputs": {
+   "paths": "[]",
+   "width": 768,
+   "height": 1024
+  }
+ },
+ "vae": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "seedvr2_ema_vae_fp16.safetensors"
+  }
+ },
+ "unet": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "seedvr2/seedvr2_7b_fp8_e4m3fn.safetensors",
+   "weight_dtype": "default"
+  }
+ },
+ "pre": {
+  "class_type": "SeedVR2Preprocess",
+  "inputs": {
+   "resized_images": [
+    "frames",
+    0
+   ]
+  }
+ },
+ "encode": {
+  "class_type": "VAEEncodeTiled",
+  "inputs": {
+   "pixels": [
+    "pre",
+    0
+   ],
+   "vae": [
+    "vae",
+    0
+   ],
+   "tile_size": 512,
+   "overlap": 128,
+   "temporal_size": 64,
+   "temporal_overlap": 8
+  }
+ },
+ "chunk": {
+  "class_type": "SeedVR2TemporalChunk",
+  "inputs": {
+   "latent": [
+    "encode",
+    0
+   ],
+   "temporal_overlap": 0,
+   "chunking_mode": "auto"
+  }
+ },
+ "cond": {
+  "class_type": "SeedVR2Conditioning",
+  "inputs": {
+   "model": [
+    "unet",
+    0
+   ],
+   "vae_conditioning": [
+    "chunk",
+    0
+   ]
+  }
+ },
+ "sample": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": [
+    "unet",
+    0
+   ],
+   "positive": [
+    "cond",
+    0
+   ],
+   "negative": [
+    "cond",
+    1
+   ],
+   "latent_image": [
+    "chunk",
+    0
+   ],
+   "seed": 1,
+   "steps": 1,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "denoise": 1.0
+  }
+ },
+ "merge": {
+  "class_type": "SeedVR2TemporalMerge",
+  "inputs": {
+   "latents": [
+    "sample",
+    0
+   ],
+   "temporal_overlap": [
+    "chunk",
+    1
+   ]
+  }
+ },
+ "decode": {
+  "class_type": "VAEDecodeTiled",
+  "inputs": {
+   "samples": [
+    "merge",
+    0
+   ],
+   "vae": [
+    "vae",
+    0
+   ],
+   "tile_size": 512,
+   "overlap": 128,
+   "temporal_size": 64,
+   "temporal_overlap": 8
+  }
+ },
+ "post": {
+  "class_type": "SeedVR2PostProcessing",
+  "inputs": {
+   "images": [
+    "decode",
+    0
+   ],
+   "original_resized_images": [
+    "frames",
+    0
+   ],
+   "color_correction_method": "lab"
+  }
+ },
+ "save": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "post",
+    0
+   ],
+   "filename_prefix": "giro/upscale"
+  }
+ }
+}

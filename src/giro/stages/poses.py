@@ -103,18 +103,23 @@ class ColmapPoses(Stage):
     # use_masks: features only on the subject (masks/ from the masks stage). A video that
     # turns the subject in front of a still background then reads as an orbit, and repeated
     # background patterns (a row of windows) can no longer pull cameras out of place.
+    # mapper "path": a proxy orbit's known cameras, refined (path_poses), instead of COLMAP's mapper;
+    # also read: "path_adjust" (default True), False keeps the path's cameras unadjusted.
     defaults = {"mapper": "incremental", "max_features": 8192, "min_reg_rate": 0.5, "use_masks": True}
+    extra_params = ("path_adjust",)
     inputs = ("frames", "hero")
     outputs = ("poses/colmap/model",)
     gpu_mb = SIFT_VRAM_MB
 
     def inputs_for(self, params: dict[str, Any]) -> tuple[str, ...]:
-        return self.inputs + (("masks/frames", "masks/hero") if params["use_masks"] else ())
+        return (self.inputs + (("masks/frames", "masks/hero") if params["use_masks"] else ())
+                + (("cameras.json", "proxy/proxy.json") if params["mapper"] == "path" else ()))
 
     def run(self, attempt: Path, params: dict[str, Any], ctx: Ctx) -> None:
         work = attempt / "poses" / "colmap"
         if work.exists():
             shutil.rmtree(work)
+        (attempt / "poses" / "frame.json").unlink(missing_ok=True)  # the path mapper's; stale otherwise
         images = work / "images"
         n_frames = _link_dir(attempt / "frames", images / "frames")
         n_hero = _link_dir(attempt / "hero", images / "hero")
@@ -178,25 +183,31 @@ class ColmapPoses(Stage):
             if params["use_masks"] else
             "the video likely does not orbit (for example the subject turns while the background stays still)"
         )
-        mapper = {"incremental": "mapper", "global": "global_mapper"}[params["mapper"]]
-        try:
-            colmap(f"reconstructing ({params['mapper']})", 0.55, mapper,
-                   "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse))
-        except StageFailed:
-            if "Failed to create any sparse model" not in log_path.read_text():
-                raise
-            ctx.metric("n_registered", 0)
-            ctx.metric("reg_rate", 0.0)
-            ctx.metric("hero_registered", False)
-            raise Rejected(f"no camera poses could be recovered; {not_orbiting}") from None
+        if params["mapper"] == "path":
+            # A proxy orbit: the frames' cameras are known (cameras.json); COLMAP only refines them.
+            from giro.stages import path_poses
+            path_poses.reconstruct(attempt, work, colmap, ctx, adjust=params.get("path_adjust", True))
+        else:
+            mapper = {"incremental": "mapper", "global": "global_mapper"}[params["mapper"]]
+            try:
+                colmap(f"reconstructing ({params['mapper']})", 0.55, mapper,
+                       "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse))
+            except StageFailed:
+                if "Failed to create any sparse model" not in log_path.read_text():
+                    raise
+                ctx.metric("n_registered", 0)
+                ctx.metric("reg_rate", 0.0)
+                ctx.metric("hero_registered", False)
+                raise Rejected(f"no camera poses could be recovered; {not_orbiting}") from None
 
         # The mapper may split the scene into several models; keep the largest.
         best, best_n = None, -1
-        for model in sorted(p for p in sparse.iterdir() if p.is_dir()):
+        for model in sorted(p for p in sparse.iterdir() if p.is_dir() and not p.name.endswith("_txt")):
             txt = model.parent / f"{model.name}_txt"
-            txt.mkdir()
-            colmap("reading model", 0.9, "model_converter", "--input_path", str(model),
-                   "--output_path", str(txt), "--output_type", "TXT")
+            if not txt.exists():  # the path mapper writes its TXT copy itself
+                txt.mkdir()
+                colmap("reading model", 0.9, "model_converter", "--input_path", str(model),
+                       "--output_path", str(txt), "--output_type", "TXT")
             n = len(read_images_txt(txt / "images.txt"))
             if n > best_n:
                 best, best_n = model, n
@@ -214,6 +225,7 @@ class ColmapPoses(Stage):
         ctx.metric("reg_rate", round(len(registered) / n_inputs, 4))
         ctx.metric("reproj_err", float(reproj.group(1)) if reproj else None)
         ctx.metric("hero_registered", any(name.startswith("hero/") for name in registered))
+        ctx.metric("mapper", params["mapper"])
         ctx.progress(1.0, f"{len(registered)}/{n_inputs} images registered")
         if len(registered) / n_inputs < params["min_reg_rate"]:
             raise Rejected(f"only {len(registered)} of {n_inputs} images got a camera pose; {not_orbiting}")

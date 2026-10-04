@@ -85,11 +85,12 @@ class NewJob(BaseModel):
         for stage, values in params.items():
             if stage not in stages.BY_NAME:
                 raise ValueError(f"unknown stage {stage!r}")
-            unknown = set(values) - set(stages.BY_NAME[stage].defaults)
+            known = stages.BY_NAME[stage]
+            unknown = set(values) - set(known.defaults) - set(known.extra_params)
             if unknown:
                 raise ValueError(f"{stage} has no params {sorted(unknown)}")
         orbit = {k: v for k, v in self.orbit.items() if k != "seed"}
-        unknown = set(orbit) - set(stages.ORBIT.defaults)
+        unknown = set(orbit) - set(stages.ORBIT.defaults) - set(stages.ORBIT.extra_params)
         if unknown:
             raise ValueError(f"orbit_video has no params {sorted(unknown)}")
         for side in ("width", "height"):  # the video model's grid (MiniMaxH3ImageToVideo: step 32)

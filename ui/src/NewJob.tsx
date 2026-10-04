@@ -26,6 +26,7 @@ const SHAPES: { key: string; label: string; ratio?: number }[] = [
 ];
 // Pixel budgets: giro's tested 768x1024, and the video model's own default, 1344x768.
 const SIZES: Record<string, { label: string; px: number }> = {
+  draft: { label: "Draft, ~0.44 MP (proxy orbit's tested size)", px: 576 * 768 },
   standard: { label: "Standard, ~0.8 MP (tested)", px: 768 * 1024 },
   large: { label: "Large, ~1 MP (the model's default)", px: 1344 * 768 },
 };
@@ -84,6 +85,8 @@ export function NewJob() {
   const [subject, setSubject] = useState("");
   const [length, setLength] = useState("");
   const [steps, setSteps] = useState("");
+  const [mode, setMode] = useState<"h3" | "proxy">("h3");
+  const [path, setPath] = useState("spiral");
   const [seeds, setSeeds] = useState("");
   const [shape, setShape] = useState("3:4");
   const [size, setSize] = useState("standard");
@@ -180,6 +183,14 @@ export function NewJob() {
     }
     if (length) orbitParams.length = Number(length);
     if (steps) orbitParams.steps = Number(steps);
+    const orbitAll: Record<string, number | string> = { ...orbitParams };
+    if (mode === "proxy") {
+      orbitAll.model = "wan22-control";
+      orbitAll.path = path;
+      orbitAll.length ??= 81;
+      orbitAll.width = vw;
+      orbitAll.height = vh;
+    }
     const editing = editOn && editPrompt.trim() !== "";
     try {
       let job = await api.createJob(picked.file, {
@@ -189,7 +200,7 @@ export function NewJob() {
         max_attempts: Math.max(want, maxAttempts),
         height_m: height ? Number(height) : undefined,
         subject: subject || undefined,
-        orbit: orbitParams,
+        orbit: orbitAll,
         crop: moved && crop ? [crop.left, crop.top, crop.left + crop.width, crop.top + crop.height] : undefined,
         seeds: seeds.split(/[\s,]+/).filter(Boolean).map(Number),
       });
@@ -300,6 +311,22 @@ export function NewJob() {
           )}
           {picked && !crop && <p className="note bad">The video size must be multiples of 32 from 256 to 2048.</p>}
 
+          <label className="field">
+            <span>Orbit</span>
+            <select value={mode} onChange={(e) => {
+              const m = e.target.value as "h3" | "proxy";
+              setMode(m);
+              setSize(m === "proxy" ? "draft" : "standard");
+            }}>
+              <option value="h3">MiniMax H3 with the 360 orbit LoRA</option>
+              <option value="proxy">Proxy orbit: TripoSplat proxy, Wan 2.2 Fun Control (experimental)</option>
+            </select>
+            <small className="muted">
+              {mode === "h3"
+                ? "The best tested quality. MiniMax H3's license excludes users in the US, EU, UK and South Korea."
+                : "A rough 3D proxy of the subject sets the camera path, so the views from above are real; permissively licensed models. Quality is still being measured."}
+            </small>
+          </label>
           <div className="field-row">
             <label className="field">
               <span>Video shape</span>
@@ -331,7 +358,7 @@ export function NewJob() {
               </label>
             )}
           </div>
-          {(vw * vh !== TESTED_PX || vw / vh !== 3 / 4) && sizeOk && (
+          {mode === "h3" && (vw * vh !== TESTED_PX || vw / vh !== 3 / 4) && sizeOk && (
             <p className="note warn">
               Only 3:4 at 768 × 1024 has been tested.
               {vw * vh > TESTED_PX * 1.05 ? " A larger video may not fit in 24 GB of GPU memory." : ""}
@@ -354,7 +381,7 @@ export function NewJob() {
             <label className="field">
               <span>Good orbits wanted</span>
               <input type="number" min={1} max={12} value={want} onChange={(e) => setWant(Number(e.target.value))} />
-              <small className="muted">About 15 min of GPU each.</small>
+              <small className="muted">About {mode === "proxy" ? 20 : 15} min of GPU each.</small>
             </label>
             <label className="field">
               <span>Seeds at most</span>
@@ -380,9 +407,20 @@ export function NewJob() {
             <div className="field-row">
               <label className="field">
                 <span>Frames</span>
-                <input type="number" value={length} onChange={(e) => setLength(e.target.value)} placeholder={String(orbit.length ?? 158)} />
-                <small className="muted">At 24 fps; longer gives more views.</small>
+                <input type="number" value={length} onChange={(e) => setLength(e.target.value)} placeholder={mode === "proxy" ? "81" : String(orbit.length ?? 158)} />
+                <small className="muted">{mode === "proxy" ? "At 16 fps (Wan's 4k+1 grid)." : "At 24 fps; longer gives more views."}</small>
               </label>
+              {mode === "proxy" && (
+                <label className="field">
+                  <span>Camera path</span>
+                  <select value={path} onChange={(e) => setPath(e.target.value)}>
+                    <option value="spiral">Spiral: two turns, rising to 45°</option>
+                    <option value="ring">Ring at the hero's height</option>
+                    <option value="wave">Wave: up to 45° and back</option>
+                    <option value="loop">Loop: up to 45° and back to the hero, which ends the clip too</option>
+                  </select>
+                </label>
+              )}
               <label className="field">
                 <span>Steps</span>
                 <input type="number" value={steps} onChange={(e) => setSteps(e.target.value)} placeholder={String(orbit.steps ?? 20)} />

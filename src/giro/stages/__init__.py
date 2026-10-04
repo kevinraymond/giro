@@ -12,6 +12,7 @@ from giro.stages import poses
 from giro.stages.masks import Masks
 from giro.stages.orbit import OrbitVideo
 from giro.stages.poses import ColmapPoses
+from giro.stages.proxy import Proxy
 from giro.stages.train import Dataset, Train
 
 # Every stage of an attempt in order; the orbit video comes first.
@@ -20,7 +21,34 @@ ORBIT = OrbitVideo()
 # the subject in front of a still room into a usable orbit (docs/FINDINGS.md, "Masks").
 PIPELINE: list[Stage] = [ORBIT, Extract(), Dedup(), Masks(), ColmapPoses(), Gate(), Dataset(), Train(),
                          Crop(), Canonicalize(), Export()]
-BY_NAME: dict[str, Stage] = {s.name: s for s in PIPELINE}
+# The proxy orbit (orbit model "wan22-control"): a TripoSplat proxy of the hero comes first, its
+# depth along a known camera path drives the video, and the path's cameras are the poses
+# (docs/FINDINGS.md, "Proxy orbit").
+PROXY = Proxy()
+PROXY_MODEL = "wan22-control"
+# What the proxy orbit sets under the user's own per-stage params: every frame has a known
+# camera (no dedup), COLMAP refines the path's cameras instead of mapping, the hero, the
+# video's exact first frame and its only real view, counts five times in training, and training
+# keeps up to 150K splats for 60K iterations: its SeedVR2-sharpened frames carry detail an 80K
+# cap throws away (docs/FINDINGS.md, "Proxy orbit").
+PROXY_PARAMS: dict[str, dict] = {
+    "dedup": {"keep_all": True},
+    "poses_colmap": {"mapper": "path"},
+    "dataset": {"hero_copies": 5},
+    "train": {"max_splats": 150_000, "total_train_iters": 60_000},
+}
+BY_NAME: dict[str, Stage] = {s.name: s for s in [PROXY, *PIPELINE]}
+
+
+def pipeline(model: str | None) -> list[Stage]:
+    """The stages of an attempt whose orbit video comes from `model` (None: H3)."""
+    return [PROXY, *PIPELINE] if model == PROXY_MODEL else PIPELINE
+
+
+def mode_params(model: str | None, stage: str) -> dict:
+    """The params the orbit model sets for `stage`, under the user's."""
+    return dict(PROXY_PARAMS.get(stage, {})) if model == PROXY_MODEL else {}
+
 # Runs once per job, before any attempt, when the user asks for it (not part of PIPELINE).
 EDIT = EditImage()
 # Runs when the gate rejects COLMAP's cameras: Depth Anything 3 poses, refined by COLMAP; the
@@ -30,5 +58,5 @@ FALLBACK = PoseFallback()
 # poses and gate run again on the filled frames (not part of PIPELINE).
 GAPFILL = GapFill()
 
-__all__ = ["BY_NAME", "EDIT", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "Cancelled", "Ctx", "Rejected", "Stage",
-           "StageFailed", "gapfill", "poses"]
+__all__ = ["BY_NAME", "EDIT", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "PROXY", "PROXY_MODEL", "Cancelled", "Ctx",
+           "Rejected", "Stage", "StageFailed", "gapfill", "mode_params", "pipeline", "poses"]

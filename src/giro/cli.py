@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from giro import gpu, report, stages, workflows
+from giro import path as campath
 from giro.comfy import server
 from giro.job import Job, JobSpec, Runner, describe
 from giro.stages.orbit import ORBIT_VRAM_MB, prepare_hero
@@ -59,8 +60,18 @@ def _stage_params(args: argparse.Namespace) -> dict[str, dict[str, object]]:
 
 
 def _orbit_params(args: argparse.Namespace) -> dict[str, object]:
-    return {"prompt": args.prompt, "width": args.width, "height": args.height, "length": args.length,
-            "steps": args.steps, "keep_loaded": args.keep_loaded}
+    params: dict[str, object] = {"prompt": args.prompt, "width": args.width, "height": args.height,
+                                 "length": args.length, "steps": args.steps, "keep_loaded": args.keep_loaded}
+    for key in ("model", "path", "turns", "pitch_end"):  # left out unless given: older attempts keep their key
+        if getattr(args, key, None) is not None:
+            params[key] = getattr(args, key)
+    return params
+
+
+def _attempt_model(attempt: Path) -> str | None:
+    """The orbit model an attempt's video came from (None: H3, or no video yet)."""
+    record = attempt / ".stages" / "orbit_video.json"
+    return json.loads(record.read_text())["params"].get("model") if record.exists() else None
 
 
 def _prepare_attempt(args: argparse.Namespace) -> dict[str, object]:
@@ -87,14 +98,17 @@ def orbit(args: argparse.Namespace) -> int:
 
 def run_stages(args: argparse.Namespace, first_params: dict[str, object] | None = None) -> int:
     attempt: Path = args.attempt
-    names = [s.name for s in stages.PIPELINE]
+    model = (first_params or {}).get("model") or _attempt_model(attempt)
+    pipeline = stages.pipeline(model)
+    names = [s.name for s in pipeline]
     first = names.index(args.start) if args.start else names.index("extract")
     last = names.index(args.stop) + 1 if args.stop else len(names)
     params = _stage_params(args)
     ctx = _cli_ctx(getattr(args, "gpu", None))
-    for stage in stages.PIPELINE[first:last]:
+    for stage in pipeline[first:last]:
         t0 = time.monotonic()
-        stage_params = ((first_params or {}) if stage is stages.ORBIT else {}) | (params.get(stage.name) or {})
+        stage_params = (((first_params or {}) if stage is stages.ORBIT else stages.mode_params(model, stage.name))
+                        | (params.get(stage.name) or {}))
         try:
             ran = stage.execute(attempt, stage_params, ctx, force=args.force)
         except stages.StageFailed as e:
@@ -110,7 +124,8 @@ def run_all(args: argparse.Namespace) -> int:
     """Everything for one seed, from the image to train/final.ply."""
     t0 = time.monotonic()
     orbit_params = _prepare_attempt(args)
-    args.attempt, args.start, args.stop, args.force = args.out, stages.ORBIT.name, None, False
+    args.attempt, args.stop, args.force = args.out, None, False
+    args.start = stages.pipeline(orbit_params.get("model"))[0].name
     code = run_stages(args, orbit_params)
     _log(f"run: finished in {(time.monotonic() - t0) / 60:.1f} min" if code == 0 else "run: stopped")
     return code
@@ -238,6 +253,11 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--steps", type=int, default=20)
         p.add_argument("--prompt", default=workflows.ORBIT_PROMPT)
         p.add_argument("--keep-loaded", action="store_true", help="leave models in VRAM for the next run")
+        p.add_argument("--model", choices=sorted(workflows.ORBIT_MODELS),
+                       help="video model (default h3); wan22-control is the proxy orbit")
+        p.add_argument("--path", choices=campath.PRESETS, help="proxy orbit: camera path (default spiral)")
+        p.add_argument("--turns", type=float, help="proxy orbit: turns around the subject (default 2)")
+        p.add_argument("--pitch-end", type=float, help="proxy orbit: final elevation in degrees (default 45)")
 
     def subject_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("--height-m", type=float, help="subject height in meters for the exported splat (default 1.7)")
@@ -254,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     attempt_args(p)
     p.set_defaults(func=orbit)
 
-    names = [st.name for st in stages.PIPELINE]
+    names = [st.name for st in stages.pipeline(stages.PROXY_MODEL)]
     e = sub.add_parser("run", help="one seed from image to trained splat, in one attempt directory")
     attempt_args(e)
     e.add_argument("-p", "--param", action="append", default=[], metavar="STAGE.KEY=VALUE")

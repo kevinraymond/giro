@@ -26,6 +26,21 @@ REFINE_LINE = re.compile(r"Refine iter (\d+), (\d+) splats")
 LOADED_LINE = re.compile(r"Loaded dataset with (\d+) training, (\d+) eval views")
 
 
+def _write_with_copies(model_txt: Path, sparse: Path, extra: list[str]) -> None:
+    """The COLMAP model as text, with `extra` images at the hero's pose and camera."""
+    for f in ("cameras.txt", "points3D.txt"):
+        (sparse / f).symlink_to((model_txt / f).resolve())
+    lines = [ln for ln in (model_txt / "images.txt").read_text().splitlines() if not ln.startswith("#")]
+    pairs = list(zip(lines[0::2], lines[1::2]))
+    hero = next(h.split() for h, _ in pairs if h.split()[9] == "hero/hero.png")
+    next_id = max(int(h.split()[0]) for h, _ in pairs) + 1
+    with open(sparse / "images.txt", "w") as f:
+        for header, points in pairs:
+            f.write(f"{header}\n{points}\n")
+        for k, name in enumerate(extra):
+            f.write(f"{next_id + k} {' '.join(hero[1:9])} {name}\n\n")
+
+
 class Dataset(Stage):
     """dataset/ in the COLMAP layout Brush reads: images/{frames,hero} and
     sparse/0, all symlinks. Never put a .ply here: Brush would start from it."""
@@ -35,6 +50,8 @@ class Dataset(Stage):
     # mask_erode_px: SAM masks run a pixel or two into the background; eroded, that sliver
     # trains as background instead of as a pale rim around the subject.
     defaults = {"eval_split_every": 8, "masks": True, "mask_erode_px": 2}
+    # Also read: "hero_copies" (default 1), how many times the hero is trained on (the proxy orbit: 5).
+    extra_params = ("hero_copies",)
     inputs = ("poses/colmap/model",)
     outputs = ("dataset",)
 
@@ -48,25 +65,40 @@ class Dataset(Stage):
         model = (attempt / "poses" / "colmap" / "model").resolve()
         sparse = out / "sparse" / "0"
         sparse.mkdir(parents=True)
-        for f in model.iterdir():
-            (sparse / f.name).symlink_to(f)
 
-        registered = sorted(read_images_txt(attempt / "poses" / "colmap" / "model_txt" / "images.txt"))
-        # Brush sorts views by name and holds out every Nth index starting at 0.
-        # The hero sorts last; if it would land on an eval index, leave out one
-        # frame so the hero is always trained on.
+        model_txt = attempt / "poses" / "colmap" / "model_txt"
+        registered = sorted(read_images_txt(model_txt / "images.txt"))
+        copies = int(params.get("hero_copies", 1))
+        if copies > 1 and "hero/hero.png" in registered:
+            # Brush has no per-image weight: the hero (sharper than the frames, and the only real
+            # view) counts `copies` times. Copies sort right after the hero, as hero/hero_2.png, ...
+            extra = [f"hero/hero_{k}.png" for k in range(2, copies + 1)]
+            registered = sorted(registered + extra)
+            _write_with_copies(model_txt, sparse, extra)
+        else:
+            extra = []
+            for f in model.iterdir():
+                (sparse / f.name).symlink_to(f)
+        # Brush sorts views by name and holds out every Nth index starting at 0. The hero (and
+        # its copies) sort last; while one would land on an eval index, leave out the frame
+        # before them so the hero is always trained on.
         split = params["eval_split_every"]
-        skipped = []
-        if split and "hero/hero.png" in registered and registered.index("hero/hero.png") % split == 0:
-            skipped.append(registered[registered.index("hero/hero.png") - 1])
+        skipped: list[str] = []
+        names = list(registered)
+        while split and any(names.index(h) % split == 0 for h in names if h.startswith("hero/")):
+            first_hero = min(names.index(h) for h in names if h.startswith("hero/"))
+            if first_hero == 0:
+                break
+            skipped.append(names.pop(first_hero - 1))
         for name in registered:
             if name in skipped:
                 continue
+            source = "hero/hero.png" if name in extra else name
             dest = out / "images" / name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.symlink_to((attempt / name).resolve())
+            dest.symlink_to((attempt / source).resolve())
             if params["masks"]:
-                mask = attempt / "masks" / name
+                mask = attempt / "masks" / source
                 if not mask.exists():
                     raise StageFailed(f"masks is on but masks/{name} is missing; run the masks stage")
                 (out / "masks" / name).parent.mkdir(parents=True, exist_ok=True)
@@ -79,7 +111,9 @@ class Dataset(Stage):
         ctx.metric("n_views", n)
         ctx.metric("n_eval", len(range(0, n, split)) if split else 0)
         if skipped:
-            ctx.log(f"left out {skipped[0]} so the hero is not held out for eval")
+            ctx.log(f"left out {', '.join(skipped)} so the hero is not held out for eval")
+        if extra:
+            ctx.metric("hero_copies", copies)
 
 
 class Train(Stage):
@@ -113,6 +147,7 @@ class Train(Stage):
     # Fewer splats means fewer layers to blend in VR, and trained to a cap they score as well as
     # the uncapped run does after the crop (docs/FINDINGS.md, "Training").
     tuned = {"max_splats": 80_000, "render_mode": "mip"}
+    extra_params = tuple(optional)
     inputs = ("dataset",)
     outputs = ("train/final.ply",)
     gpu_mb = BRUSH_VRAM_MB
