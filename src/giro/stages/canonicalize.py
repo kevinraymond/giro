@@ -9,6 +9,10 @@ its footprint centered on the origin, and its height is `height_m` meters.
          with the cameras' image-up direction
 - front: from the orbit center toward the hero camera, in the ring plane
 
+When the cameras come from a known path around a proxy (poses/frame.json: the proxy's
+center, up and front in the model's world), that frame is used instead: a path that
+rises is not a ring, and its normal is not up.
+
 The PLY on disk keeps the usual 3DGS file convention (y down), so viewers
 that read PLY show it upright; transform.json records the mapping.
 splat-transform applies it, which also rotates the spherical harmonics.
@@ -52,10 +56,21 @@ def orbit_frame(views: list[View]) -> tuple[np.ndarray, np.ndarray]:
     return center, np.stack([right, up, front])
 
 
+def given_frame(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """orbit_frame's result from a frame.json: its center, and up and front made orthonormal."""
+    frame = json.loads(path.read_text())
+    up = np.asarray(frame["up"], dtype=float)
+    up /= np.linalg.norm(up)
+    front = np.asarray(frame["front"], dtype=float)
+    front -= (front @ up) * up
+    front /= np.linalg.norm(front)
+    return np.asarray(frame["center"], dtype=float), np.stack([np.cross(up, front), up, front])
+
+
 class Canonicalize(Stage):
     name = "canonicalize"
     defaults = {"height_m": 1.7}
-    inputs = ("crop/cropped.ply", "poses/colmap/model_txt")
+    inputs = ("crop/cropped.ply", "poses/colmap/model_txt", "poses/frame.json")  # frame.json: only proxy orbits
     outputs = ("canonical/splat.ply", "canonical/transform.json")
 
     def run(self, attempt: Path, params: dict[str, Any], ctx: Ctx) -> None:
@@ -64,7 +79,8 @@ class Canonicalize(Stage):
             shutil.rmtree(out)
         out.mkdir()
         views = load_views(attempt / "poses" / "colmap" / "model_txt")
-        center, m = orbit_frame(views)
+        frame = attempt / "poses" / "frame.json"
+        center, m = given_frame(frame) if frame.exists() else orbit_frame(views)
         points = splat.positions(splat.read_ply(attempt / "crop" / "cropped.ply"))
 
         local = (points - center) @ m.T  # viewer-frame axes, orbit center at the origin, world units
