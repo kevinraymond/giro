@@ -173,6 +173,9 @@ Where it stands, and what is next (Oct 4):
 - The proxy orbit became giro's default on Oct 4: the license question goes away, the hero view is
   as good or better, the splats are sharper, the top is real coverage, and 14 of 14 runs passed.
   Not done: the shapes of hard-surface subjects are TripoSplat's.
+- SageAttention (Triton kernels, BSD-3-Clause) is on by default since Oct 4: Wan at 768×1024 went
+  from 1240 s to 828 s and H3 from 425 s to 321 s per clip, with the hero view, sharpness and
+  likeness within seed noise (H3 adventurer: 23.2 dB / 0.092 with it, 22.6 / 0.093 without).
 - Next: Pixal3D as the proxy, which means moving giro's pinned ComfyUI from v0.31.1 to v0.38 (the
   whole pipeline ran on v0.38.2 for the tank); the 135K-splat exports in the headset; and a way to
   make chained clips agree (render the first splat into the later clips as kept content, as

@@ -61,8 +61,9 @@ def start(gpu: int, timeout: float = 120.0) -> str:
             "--extra-model-paths-config", str(MODEL_PATHS),
             "--preview-method", "latent2rgb", "--preview-size", "1024",
             "--disable-auto-launch",
-            # GIRO_COMFY_SAGE=1: SageAttention kernels (scripts/comfy-lock.txt), for Wan's long videos
-            *(["--use-sage-attention"] if os.environ.get("GIRO_COMFY_SAGE") == "1" else []),
+            # SageAttention kernels (scripts/comfy-lock.txt): Wan 1.5x and H3 1.3x faster, quality within
+            # seed noise (docs/FINDINGS.md, "Proxy orbit"); GIRO_COMFY_SAGE=0 turns them off
+            *([] if os.environ.get("GIRO_COMFY_SAGE") == "0" else ["--use-sage-attention"]),
         ],
         cwd=COMFY_DIR, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
     )
