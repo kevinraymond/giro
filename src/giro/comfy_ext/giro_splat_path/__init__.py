@@ -134,6 +134,60 @@ class GiroRenderSplatCameras:
         return (torch.stack(imgs), torch.stack(masks))
 
 
+class GiroMeshToSplat:
+    """A mesh's surface as small Gaussians, so a mesh proxy (TRELLIS.2, Pixal3D) renders like
+    TripoSplat's: `count` points sampled by area, colored from the vertex colors (gray without),
+    moved into the splat frame (the mesh's y-up world turned to the splat's y-down one), centered
+    and scaled to `height` tall."""
+
+    CATEGORY = "giro"
+    RETURN_TYPES = ("SPLAT",)
+    FUNCTION = "convert"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "mesh": ("MESH",),
+            "count": ("INT", {"default": 262144, "min": 1024, "max": 4_000_000}),
+            "height": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 100.0}),
+            "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1}),
+        }}
+
+    def convert(self, mesh, count, height, seed):
+        v = mesh.vertices[0].float().cpu()
+        f = mesh.faces[0].long().cpu()
+        if mesh.vertex_counts is not None:
+            v, f = v[:int(mesh.vertex_counts[0])], f[:int(mesh.face_counts[0])]
+        tri = v[f]  # (F, 3, 3)
+        area = torch.linalg.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]).norm(dim=1) / 2
+        g = torch.Generator().manual_seed(seed)
+        pick = torch.multinomial(area / area.sum(), count, replacement=True, generator=g)
+        r1, r2 = torch.rand(count, generator=g), torch.rand(count, generator=g)
+        s1 = r1.sqrt()
+        bary = torch.stack([1 - s1, s1 * (1 - r2), s1 * r2], 1)  # uniform on each triangle
+        pts = (tri[pick] * bary[:, :, None]).sum(1)
+        colors = getattr(mesh, "vertex_colors", None)
+        if colors is not None:
+            c = colors[0].float().cpu()[:, :3]
+            if c.max() > 1.5:
+                c = c / 255.0
+            rgb = (c[f[pick]] * bary[:, :, None]).sum(1).clamp(0, 1)
+        else:
+            rgb = torch.full((count, 3), 0.6)
+        pts = pts * torch.tensor([1.0, -1.0, -1.0])  # y-up world -> splat frame (y down)
+        lo, hi = pts.min(0).values, pts.max(0).values
+        scale = height / float(hi[1] - lo[1])
+        pts = (pts - (lo + hi) / 2) * scale
+        # isotropic, about the spacing between samples, so the surface renders closed
+        spacing = float((area.sum() * scale**2 / count).sqrt())
+        C0 = 0.28209479177387814
+        splat = gs.Types.SPLAT(
+            pts[None], torch.full((1, count, 3), 0.7 * spacing),
+            torch.tensor([1.0, 0.0, 0.0, 0.0]).expand(1, count, 4).clone(),
+            torch.ones((1, count, 1)), ((rgb - 0.5) / C0)[None, :, None, :])
+        return (splat,)
+
+
 class GiroSaveSplat:
     """Write a splat to a PLY file at an absolute path inside giro's data roots."""
 
@@ -258,12 +312,14 @@ NODE_CLASS_MAPPINGS = {
     "GiroRenderSplatCameras": GiroRenderSplatCameras,
     "GiroSaveSplat": GiroSaveSplat,
     "GiroLoadSplat": GiroLoadSplat,
+    "GiroMeshToSplat": GiroMeshToSplat,
     "GiroWanFunControlToVideo": GiroWanFunControlToVideo,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "GiroRenderSplatPath": "giro: render splat along a path",
     "GiroRenderSplatCameras": "giro: render splat from cameras",
     "GiroSaveSplat": "giro: save splat (path)",
+    "GiroMeshToSplat": "giro: mesh surface as a splat",
     "GiroLoadSplat": "giro: load splat (path)",
     "GiroWanFunControlToVideo": "giro: Wan 2.2 Fun Control with a first frame",
 }

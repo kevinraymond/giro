@@ -71,6 +71,75 @@ def tripo_workflow(image: str, seeds: list[int], out_dir: Path, params: dict[str
     return wf
 
 
+# The TRELLIS.2 family (MIT, native in ComfyUI from v0.34): files in giro's model store.
+TRELLIS_MODELS = {
+    "trellis2": {"unet": "trellis2/trellis_2_bf16.safetensors", "dino": "dino_v3_vit_l.safetensors", "pad": 1.0},
+    # TRELLIS.2 conditioned pixel-aligned on the image, from its field of view (MoGe-2 estimates it)
+    "pixal3d": {"unet": "pixal3d/pixal3d_bf16.safetensors", "dino": "dino_v3_L_naf_fp32.safetensors", "pad": 1.1},
+}
+
+
+def trellis_workflow(image: str, seeds: list[int], out_dir: Path, params: dict[str, Any], model: str) -> dict[str, Any]:
+    """TRELLIS.2 or Pixal3D on an uploaded RGBA image (Comfy's template, shape at 1024^3, colors
+    painted from the texture stage), each mesh's surface as a splat at out_dir/proxy_<seed>.ply."""
+    m = TRELLIS_MODELS[model]
+    k = lambda model_, pos, neg, latent, seed, steps, cfg, scheduler: {"class_type": "KSampler", "inputs": {  # noqa: E731
+        "model": model_, "positive": pos, "negative": neg, "latent_image": latent, "seed": seed, "steps": steps,
+        "cfg": cfg, "sampler_name": "euler", "scheduler": scheduler, "denoise": 1.0}}
+    wf: dict[str, Any] = {
+        "rgba": {"class_type": "LoadImage", "inputs": {"image": image, "upload": "image"}},
+        "mask": {"class_type": "InvertMask", "inputs": {"mask": ["rgba", 1]}},
+        "crop": {"class_type": "ImageCropToMask", "inputs": {"images": ["rgba", 0], "masks": ["mask", 0], "width": 1024,
+                                                             "height": 1024, "pad_factor": m["pad"], "grow_mask": 0,
+                                                             "background": "#000000"}},
+        "dino": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": m["dino"]}},
+        "shape_vae": {"class_type": "VAELoader", "inputs": {"vae_name": "trellis_2_shape_vae_bf16.safetensors"}},
+        "tex_vae": {"class_type": "VAELoader", "inputs": {"vae_name": "trellis_2_texture_vae_bf16.safetensors"}},
+        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": m["unet"], "weight_dtype": "default"}},
+        # the template's guidance: CFG only in the late part of the structure and shape passes
+        "m_struct_cfg": {"class_type": "CFGOverride", "inputs": {"model": ["unet", 0], "cfg": 1.0, "start_percent": 0.667, "end_percent": 1.0}},
+        "m_struct_rescale": {"class_type": "RescaleCFG", "inputs": {"model": ["m_struct_cfg", 0], "multiplier": 0.7}},
+        "m_struct": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["m_struct_rescale", 0], "shift": 5.0}},
+        "m_shape_cfg": {"class_type": "CFGOverride", "inputs": {"model": ["unet", 0], "cfg": 1.0, "start_percent": 0.769, "end_percent": 1.0}},
+        "m_shape": {"class_type": "RescaleCFG", "inputs": {"model": ["m_shape_cfg", 0], "multiplier": 0.5}},
+        "empty": {"class_type": "EmptyTrellis2LatentStructure", "inputs": {"batch_size": 1}},
+    }
+    if model == "pixal3d":
+        wf |= {
+            "moge": {"class_type": "LoadMoGeModel", "inputs": {"model_name": "moge_2_vitl_normal_fp16.safetensors"}},
+            "geometry": {"class_type": "MoGeInference", "inputs": {"moge_model": ["moge", 0], "image": ["crop", 0], "resolution_level": 9,
+                                                                   "fov_x_degrees": 0.0, "batch_size": 4, "force_projection": True,
+                                                                   "apply_mask": True, "refine_steps": 3}},
+            "fov": {"class_type": "MoGeGeometryToFOV", "inputs": {"moge_geometry": ["geometry", 0], "axis": "horizontal", "unit": "degrees"}},
+            "cond": {"class_type": "Pixal3DConditioning", "inputs": {"clip_vision_model": ["dino", 0], "image": ["crop", 0], "camera_angle_x": ["fov", 0]}},
+        }
+    else:
+        wf["cond"] = {"class_type": "Trellis2Conditioning", "inputs": {"clip_vision_model": ["dino", 0], "image": ["crop", 0]}}
+    for seed in seeds:
+        n = lambda name: f"{name}_{seed}"  # noqa: E731
+        wf |= {
+            n("structure"): k(["m_struct", 0], ["cond", 0], ["cond", 1], ["empty", 0], seed, 12, 7.5, "normal"),
+            n("voxel"): {"class_type": "VaeDecodeStructureTrellis2", "inputs": {"samples": [n("structure"), 0], "vae": ["shape_vae", 0], "resolution": "32"}},
+            n("shape_stage"): {"class_type": "Trellis2ShapeStage", "inputs": {"positive": ["cond", 0], "negative": ["cond", 1], "voxel": [n("voxel"), 0]}},
+            n("shape"): k(["m_shape", 0], [n("shape_stage"), 0], [n("shape_stage"), 1], [n("shape_stage"), 2], seed, 20, 7.5, "normal"),
+            n("up_stage"): {"class_type": "Trellis2UpsampleStage", "inputs": {"positive": [n("shape_stage"), 0], "negative": [n("shape_stage"), 1],
+                                                                             "shape_latent": [n("shape"), 0], "vae": ["shape_vae", 0],
+                                                                             "target_resolution": 1024}},
+            n("up"): k(["m_shape", 0], [n("up_stage"), 0], [n("up_stage"), 1], [n("up_stage"), 2], seed, 12, 7.5, "simple"),
+            n("mesh"): {"class_type": "VaeDecodeShapeTrellis", "inputs": {"samples": [n("up"), 0], "vae": ["shape_vae", 0]}},
+            n("tex_stage"): {"class_type": "Trellis2TextureStage", "inputs": {"positive": [n("up_stage"), 0], "negative": [n("up_stage"), 1],
+                                                                             "shape_latent": [n("up"), 0]}},
+            n("tex"): k(["unet", 0], [n("tex_stage"), 0], [n("tex_stage"), 1], [n("tex_stage"), 2], seed + 1, 12, 1.0, "normal"),
+            n("colors"): {"class_type": "VaeDecodeTextureTrellis", "inputs": {"samples": [n("tex"), 0], "vae": ["tex_vae", 0],
+                                                                             "shape_subdivides": [n("mesh"), 1]}},
+            n("paint"): {"class_type": "PaintMesh", "inputs": {"mesh": [n("mesh"), 0], "voxel_colors": [n("colors"), 0]}},
+            n("splat"): {"class_type": "GiroMeshToSplat", "inputs": {"mesh": [n("paint"), 0], "count": params["n_gaussians"],
+                                                                     "height": 1.0, "seed": seed}},
+            n("save"): {"class_type": "GiroSaveSplat", "inputs": {"splat": [n("splat"), 0], "path": str(out_dir / f"proxy_{seed}.ply")}},
+        }
+    return wf
+
+
 class Points:
     """A proxy's Gaussian centers and base colors, enough to fit cameras with."""
 
@@ -233,6 +302,9 @@ class Proxy(Stage):
         "n_gaussians": 262_144,
         "fov": 35.0,        # the hero camera's, over the image's smaller side
     }
+    # Also read: "model", "triposplat" (default), "pixal3d" or "trellis2" (TRELLIS_MODELS; these
+    # need ComfyUI v0.34 or later).
+    extra_params = ("model",)
     inputs = ("hero/hero.png",)
     outputs = ("proxy/proxy.ply", "proxy/proxy.json")
     gpu_mb = SAM_VRAM_MB
@@ -269,6 +341,7 @@ class Proxy(Stage):
         fit_sheet(points, cam, hero, hero_mask).save(out / "fit.jpg", quality=90)
         ctx.preview(out / "fit.jpg")
         (out / "proxy.json").write_text(json.dumps({
+            "model": params.get("model", "triposplat"),
             "hero_camera": best["camera"], "seed": best["seed"], "iou": best["iou"],
             "bounds": [points.lo.tolist(), points.hi.tolist()], "n_gaussians": points.n,
             "hero_size": [hero.width, hero.height], "fits": fits,
@@ -306,10 +379,13 @@ class Proxy(Stage):
                     rgba.putalpha(Image.fromarray(mask.astype(np.uint8) * 255, "L"))
                     rgba.save(out / "hero_rgba.png")
 
-                    ctx.progress(0.2, f"TripoSplat, {len(seeds)} seeds")
+                    model = params.get("model", "triposplat")
+                    ctx.progress(0.2, f"{model}, {len(seeds)} seeds")
                     image = await comfy.upload_image(out / "hero_rgba.png")
                     done: Done | None = None
-                    async for event in events(comfy, tripo_workflow(image, seeds, out / "candidates", params), ctx):
+                    wf = (tripo_workflow(image, seeds, out / "candidates", params) if model == "triposplat"
+                          else trellis_workflow(image, seeds, out / "candidates", params, model))
+                    async for event in events(comfy, wf, ctx):
                         if isinstance(event, Done):
                             done = event
                     assert done is not None
@@ -317,4 +393,4 @@ class Proxy(Stage):
                     await comfy.free()
         missing = [s for s in seeds if not (out / "candidates" / f"proxy_{s}.ply").exists()]
         if missing:
-            raise StageFailed(f"TripoSplat wrote no splat for seeds {missing}")
+            raise StageFailed(f"{params.get('model', 'triposplat')} wrote no splat for seeds {missing}")

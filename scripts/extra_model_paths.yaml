@@ -8,6 +8,7 @@ giro_models:
   loras: loras
   clip_vision: clip_vision
   sam2: sams
+  geometry_estimation: geometry_estimation  # MoGe (Pixal3D's field of view)
 
 giro_ext:
   base_path: ../src/giro

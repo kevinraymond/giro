@@ -22,7 +22,8 @@ from pathlib import Path
 from giro import gpu as gpu_mod
 
 ROOT = Path(__file__).resolve().parents[3]
-COMFY_DIR = ROOT / "vendor" / "comfyui"
+# GIRO_COMFY_DIR: another ComfyUI checkout with its own .venv (e.g. a newer one being tried)
+COMFY_DIR = Path(os.environ["GIRO_COMFY_DIR"]).resolve() if os.environ.get("GIRO_COMFY_DIR") else ROOT / "vendor" / "comfyui"
 MODEL_PATHS = ROOT / "scripts" / "extra_model_paths.yaml"
 RUN_DIR = ROOT / "data" / "run"
 

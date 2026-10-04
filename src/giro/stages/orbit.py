@@ -25,7 +25,7 @@ from giro import path as campath
 from giro import workflows
 from giro.comfy import ComfyClient, ComfyError, Done, Event, NodeStarted, Preview, Progress, server
 from giro.hero import fit_to_aspect
-from giro.stages.base import Ctx, Stage, StageFailed
+from giro.stages.base import Ctx, Rejected, Stage, StageFailed
 
 # MiniMax H3 weights stream from system RAM, so it runs with less free VRAM
 # than its ~20 GB footprint; this is the threshold for preferring a GPU.
@@ -290,8 +290,9 @@ class OrbitVideo(Stage):
         psnr = 10 * np.log10(255.0**2 / max(mse, 1e-6))
         ctx.metric("first_frame_psnr", round(psnr, 2))
         if psnr < 20.0:
-            raise StageFailed(f"the video's first frame does not match the hero ({psnr:.1f} dB): the video model "
-                              "returned noise or a broken clip; Retry runs it again")
+            # Rejected, so a job rerolls: the same run in a fresh ComfyUI was fine
+            raise Rejected(f"the video's first frame does not match the hero ({psnr:.1f} dB): the video model "
+                           "returned noise or a broken clip")
 
     async def _refine(self, comfy: ComfyClient, attempt: Path, hero: str, clips: list[list[campath.PathCamera]],
                       ranges: list[tuple[int, int]], text: str, params: dict[str, Any], ctx: Ctx) -> float:
