@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """giro's file I/O nodes: load images and save masks by absolute path.
 
 ComfyUI is giro's private, localhost-only backend, so stages hand it paths

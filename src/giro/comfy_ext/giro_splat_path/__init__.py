@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """giro's nodes for the proxy orbit: render a Gaussian splat along a camera path, save and
 load splats by path, and Wan 2.2 Fun Control with a first frame.
 

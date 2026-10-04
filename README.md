@@ -243,4 +243,7 @@ and [Qwen-Image-2512](https://huggingface.co/Qwen/Qwen-Image-2512) with its
 
 ## License
 
-giro's own code is [MIT](LICENSE). The license does not cover the third-party tools and models above.
+giro's own code is [MIT](LICENSE), except its ComfyUI nodes in `src/giro/comfy_ext/`, which are
+[GPL-3.0-or-later](src/giro/comfy_ext/LICENSE): they run inside ComfyUI (GPL-3.0) and build on its
+internals. The rest of giro talks to ComfyUI over HTTP. Neither license covers the third-party
+tools and models above.
