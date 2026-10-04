@@ -1,5 +1,10 @@
 # Proxy orbit spike (Oct 3, 2026)
 
+These became the proxy orbit mode on Oct 4 (`--model wan22-control`: `src/giro/stages/proxy.py`,
+`src/giro/path.py`, `src/giro/stages/path_poses.py`); see docs/FINDINGS.md, "Proxy orbit". The
+scripts stay as the record of the spike. `seedvr2_frames.py` is the SeedVR2 experiment that became
+`orbit_video.upscale`.
+
 Scratch scripts from the session that tried a proxy-guided orbit: TripoSplat makes a rough splat
 of the hero, giro renders it as a depth video along a known camera path, and Wan 2.2 Fun Control
 repaints that path with the hero as the appearance reference. They are kept to be turned into a

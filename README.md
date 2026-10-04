@@ -35,6 +35,17 @@ Depth Anything 3 and refines them with COLMAP. If the only problem is one missin
 regenerates just that arc.
 Passing seeds are ranked by held-out PSNR.
 
+There are two ways to make the orbit:
+
+- **MiniMax H3 with a 360° orbit LoRA** (the default): the hero is the first and last frame of a
+  generated orbit, and COLMAP recovers the cameras. Its license excludes the US, EU, UK and Korea.
+- **The proxy orbit** (`--model wan22-control`, experimental, permissively licensed models):
+  TripoSplat turns the hero into a rough 3D *proxy*, giro renders the proxy's depth along a camera
+  path it chooses (a spiral rising to 45°, starting at the hero's own camera), and Wan 2.2 Fun
+  Control repaints that path with the hero as the first frame. The cameras are known, so COLMAP
+  only refines them, and the views from above are real views instead of guesses. SeedVR2 then
+  doubles the frames' resolution before training.
+
 The rest follows from there. Masking the subject before COLMAP rescues "turntable" videos. Brush
 trains with a transparent background. The **crop** keeps Gaussians that land inside the subject
 mask in most views. The export is upright, scaled to the subject's real height, and compressed for
@@ -113,12 +124,29 @@ The details are in [docs/FINDINGS.md](docs/FINDINGS.md).
   including their swords and mirrors.
 - The Quest 3 browser stuttered at 245K splats, well below the 400–600K I expected. This needs a
   cleaner measurement.
+- The proxy orbit, against H3 with the same training on five subjects, matched or beat it on the
+  hero view on three of five (adventurer LPIPS 0.065 against 0.093, knight 0.057 against 0.071) and
+  was sharper on all five, with a formed top where H3's is a smear. H3 kept the hero's look around
+  the ring better on four of five: the video follows the proxy's shape, and TripoSplat's tank is
+  boxier than the real one.
+- Training, not the video, was where detail went missing: at an 80K splat cap the splat kept about
+  60% of the frames' sharpness. SeedVR2 frames and up to 150K splats for 60K iterations fixed most
+  of that; a sharper, slower 768×1024 video alone did not.
+- Measure on the hero view. Brush's held-out PSNR scores a video against itself, and a blurrier
+  video can score higher. `scripts/evaluate.py` scores the hero view, sharpness and likeness.
+
+**Where it stands (Oct 4, 2026).** The proxy orbit is worth making the default for a public tool:
+anyone can use its models, and its quality is on par with H3's or better except for how faithfully
+the shape of hard-surface subjects comes through. It still needs a better proxy for those, more
+seeds than one per subject, and a check of its denser splats (up to 150K) in the headset. Details
+and the open questions are in [FINDINGS](docs/FINDINGS.md#proxy-orbit).
 
 ## Running it
 
 giro is shared to read and learn from. It is not packaged for easy installation. You will need:
 
-- Linux with two 24 GB NVIDIA GPUs. The video alone peaks at about 22 GB.
+- Linux with two 24 GB NVIDIA GPUs (the H3 video alone peaks at about 22 GB), or one for the proxy
+  orbit, whose steps run one after another on a single card in about 20 minutes per seed.
 - Python 3.12 with [uv](https://docs.astral.sh/uv/), Node.js, Rust, FFmpeg, and COLMAP 4.x with CUDA.
 - The model weights, which you supply (see [Third-party software and models](#third-party-software-and-models)).
 
@@ -134,25 +162,31 @@ cd ui && npm ci && npm run build && cd ..
 
 uv run giro serve                       # UI on http://<host>:8470
 uv run giro run image.png -o data/try1  # or one seed from the CLI
+uv run giro run image.png -o data/try2 --model wan22-control --width 576 --height 768 --length 81 --gpu 0
+                                        # the proxy orbit, on one GPU
 uv run giro job export data/jobs/<job>  # a job as one zip: offline HTML report + PLY/SOG/SPZ
 ```
 
 `just check` lints and runs the tests. Outputs go to `data/`, which git ignores.
+`uv run --group eval scripts/evaluate.py OUT ATTEMPT...` scores finished attempts (hero view,
+sharpness, likeness) so orbit modes and settings can be compared.
 
 ## Repository map
 
 | Path | Contents |
 |---|---|
-| `src/giro/stages/` | One module per pipeline step |
+| `src/giro/stages/` | One module per pipeline step (`proxy.py`, `path_poses.py`: the proxy orbit) |
+| `src/giro/path.py` | The proxy orbit's camera paths |
 | `src/giro/api.py`, `manager.py`, `job.py`, `scheduler.py` | Orchestrator: API, jobs, rerolls, GPU scheduling |
 | `src/giro/comfy/`, `src/giro/workflows/` | Headless ComfyUI client and workflows |
 | `ui/` | React UI with a [Spark](https://sparkjs.dev) splat viewer and a WebXR page |
-| `scripts/` | Pinned setup scripts, sweeps, report and screenshot helpers |
+| `scripts/` | Pinned setup scripts, sweeps, the evaluator, report and screenshot helpers |
 | `docs/FINDINGS.md` | Lab notes |
 
 ## Limitations
 
 - The top of the head, the underside and other unseen parts are invented, and they come out soft.
+  The proxy orbit sees the top but still invents it, and its shapes are only as good as its proxy.
 - The measurements are small: a few subjects and seeds, untuned, on one machine.
 - The test images are AI-generated, so held-out PSNR measures consistency with the generated
   video, not with reality.
@@ -168,6 +202,12 @@ including what it says about outputs, before use.
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Headless inference server (over HTTP) | GPL-3.0 |
 | [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) ([ComfyUI files](https://huggingface.co/Comfy-Org/MiniMax-H3)) | Orbit video | [MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) |
 | [MiniMax-H3 360° Orbit LoRA](https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA) | Orbit video (on by default) | MiniMax H3 Community License |
+| [TripoSplat](https://github.com/VAST-AI-Research/TripoSplat) ([weights](https://huggingface.co/VAST-AI/TripoSplat)) | Proxy splat (proxy orbit) | MIT |
+| [DINOv3](https://github.com/facebookresearch/dinov3) ViT-H, bundled with TripoSplat | TripoSplat's image encoder | [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md) |
+| [FLUX.2 autoencoder](https://github.com/black-forest-labs/flux2#flux2-autoencoder), bundled with TripoSplat | TripoSplat's image conditioning | Apache-2.0 |
+| [Wan 2.2 Fun Control A14B](https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-Control) ([ComfyUI files](https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged)) | Orbit video (proxy orbit) | Apache-2.0 |
+| [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) ([7B](https://huggingface.co/ByteDance-Seed/SeedVR2-7B), [ComfyUI files](https://huggingface.co/Comfy-Org/SeedVR2)) | Frame upscale (proxy orbit) | Apache-2.0 |
+| [SageAttention](https://github.com/thu-ml/SageAttention) 1.0.6 | Attention kernels (optional) | BSD-3-Clause |
 | [Qwen-Image-Edit-2511](https://huggingface.co/Qwen/Qwen-Image-Edit-2511) ([ComfyUI files](https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI), [Lightning LoRA](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning)) | Background edit | Apache-2.0 |
 | [SAM 3.1](https://huggingface.co/facebook/sam3.1) ([ComfyUI files](https://huggingface.co/Comfy-Org/sam3.1)) | Subject masks | [SAM License](https://huggingface.co/Comfy-Org/sam3.1/blob/main/LICENSE) |
 | [COLMAP](https://colmap.github.io) | Camera poses | BSD-3-Clause |
@@ -184,6 +224,15 @@ Republic of Korea and the United States), and asks people there to contact MiniM
 It also requires a "Powered by MiniMax H3" notice on products built with it, and it does not allow
 using outputs to improve other AI models. This is a summary, not legal advice. The orbit step is
 the only part of giro that depends on H3.
+
+**The proxy orbit (`--model wan22-control`, experimental) does not use MiniMax H3.** Its models
+allow commercial use in every region. TripoSplat is MIT, but its Hugging Face repo bundles Meta's
+DINOv3 encoder under the DINOv3 License, the same terms as SAM 3.1's SAM License: royalty-free and
+commercial, but no military, warfare, nuclear, espionage or weapons uses, no use by sanctioned
+parties, no reverse engineering, the license text must go with the weights, and Meta can change the
+terms. The FLUX.2 VAE bundled with TripoSplat is Apache-2.0; the non-commercial license covers
+FLUX.2 [dev] itself, not this VAE. Wan 2.2 Fun Control and SeedVR2 are Apache-2.0. This is a
+summary, not legal advice.
 
 The sample subjects were generated with [Z-Image Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo)
 and [Qwen-Image-2512](https://huggingface.co/Qwen/Qwen-Image-2512) with its

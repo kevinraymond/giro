@@ -50,6 +50,117 @@ was trained on, seeds 1–4 with no rerolls:
   like an orbit, but the room changed from wall to wall and the satchel swapped hips. Another
   turned the subject twice in a still room. It stays as `model=wan22` for comparisons.
 
+## Proxy orbit
+
+MiniMax H3's license excludes the US, EU, UK and South Korea, so giro has a second way to make the
+orbit from permissively licensed models (`model=wan22-control`):
+
+1. TripoSplat (MIT) turns the masked hero into a rough splat, the *proxy*, in about 10 s per
+   seed. giro runs 4 seeds and keeps the one whose silhouette best matches the hero.
+2. giro fits the hero's camera to the proxy on the CPU (about 5 s): silhouette IoU over yaw and
+   pitch, distance and framing from the silhouettes' boxes, then a Nelder-Mead refinement. Front
+   and back share a silhouette, so the color against the hero breaks the tie. On the adventurer
+   and the tank the fit reaches IoU 0.94–0.95.
+3. The proxy is rendered as depth along a camera path that starts at the hero's camera, and
+   Wan 2.2 Fun Control 14B (Apache-2.0) repaints it with the hero as both the first frame and the
+   appearance reference. ComfyUI's node implements a first frame but does not declare the input;
+   giro's node does.
+4. The path's cameras are the poses: COLMAP triangulates its masked matches from them and
+   bundle-adjusts twice. The hero is the video's first frame (31 dB against it), so it takes frame
+   0's pose; adjusted on its own, bundle adjustment traded its focal length for distance.
+
+The first runs (Oct 3–4, adventurer, seed 1, 576×768, 81 frames, a two-turn spiral to 45°):
+
+- Wan without control, even with an orbit LoRA, passed 0 of 4: the subject was not one consistent
+  object. With the proxy's depth it posed every frame, and the camera path is known even where
+  COLMAP's own mapper loses it (it posed 27 of 82 frames of the spiral).
+- The gate passed outright: 82 of 82 images posed, bundle adjustment moved the cameras a median
+  1.8% of the orbit radius from the path, and the subject's mask matched the proxy's silhouette at
+  IoU 0.96 on average.
+- 13.6 min for the whole attempt on one 4090: proxy 65 s, video 474 s, masks 113 s, poses 5 s,
+  training 150 s.
+
+Brush's PSNR does not compare across orbit modes: it scores the video against itself, and a
+blurrier video can score higher. giro's evaluator (`scripts/evaluate.py`) scores the cropped and
+canonical splats on the hero view (the only real image, subject pixels only, so PSNR reads low),
+on sharpness (mean absolute Laplacian inside the subject, as a fraction of the hero's, with the
+subject 768 px tall) and on DINOv2 likeness to the hero. The Laplacian also rewards noise, so read
+it with close-up renders.
+
+Adventurer, seed 1, every row trained with the hero's camera known:
+
+| Orbit | Hero PSNR / LPIPS | Sharpness ring / above | Likeness front / ring | Time |
+|---|---|---|---|---|
+| H3 + orbit LoRA, 768×1024, 158 frames, 120K Gaussians | 21.9–22.1 / 0.100 | 0.36–0.38 / 0.17–0.18 | 0.93–0.94 / 0.67–0.70 | – |
+| Proxy, 576×768, 80K cap | 22.0 / 0.090 | 0.42 / 0.24 | 0.91 / 0.69 | 13.6 min |
+| Proxy, 768×1024 video | 22.1 / 0.086 | 0.38 / 0.20 | 0.93 / 0.71 | 26.5 min |
+| Proxy + Wan refine pass to 768×1024 | 22.8 / 0.084 | 0.35 / 0.20 | 0.90 / 0.69 | 22.4 min |
+| Proxy + SeedVR2 to 768×1024 | 21.9 / 0.087 | 0.55 / 0.36 | 0.89 / 0.66 | 14.5 min |
+| **Proxy + SeedVR2 ×2 + 150K splats, 60K iterations** | **22.7 / 0.065** | **0.62 / 0.40** | 0.92 / 0.69 | 19.9 min |
+
+- Training was the bottleneck, not the video. Rendered at the frames' own cameras, the splat
+  keeps about 60% of the frames' sharpness: H3 0.62 → 0.38, proxy 0.51 → 0.31, and a sharper
+  768×1024 video (0.60) still trains to 0.33. Up to 150K splats and 60K iterations recover part
+  of it (0.39); Brush stops growing at about 157K on its own, mip stays better than without, and
+  training on the hero five times is worth 1.5 dB on the hero view.
+- SeedVR2 (one-step video super-resolution, Apache-2.0, native in ComfyUI) upscales the 81
+  frames in about a minute, to frames sharper than the hero itself, and the splat keeps them:
+  the close-ups have wool texture, buckles and a crisp face from every side, and a formed top.
+  At ×2 it invents a knit-like texture the hero's cloth does not have; ×1.33 is noisier. H3's
+  front face still keeps the hero's identity a little better.
+- Wan at 768×1024 makes sharper frames than at 576×768, at 2.6× the time (1.5× with
+  SageAttention), but the gain does not survive training at 80K; the refine pass (the clip again at
+  768×1024 from σ 0.35) cleans edges and fits the hero best, and softens the cloth.
+- More clips along one camera program (a climb to 70°, then close-ups) join without a seam, since
+  each starts on the last frame of the one before, but the splat gets blurrier (sharpness 0.28 at
+  80K, 0.33 at 150K) and the views from above more like the hero: the clips disagree on fine
+  detail, and training averages them.
+- Ending the path on the hero (also pinned as the last frame) and starting each clip from the
+  proxy's color render instead of noise both traded one score for another; neither is a default.
+- The tank shows the limit: Wan follows the proxy's depth faithfully, so TripoSplat's boxier hull
+  and flat rear come through. It matches H3 on the hero view (18.5 dB / 0.044 against 17.7 / 0.047)
+  and is sharper, but looks less like the hero around the ring (0.58 against 0.88).
+
+The proxy orbit's defaults are the bold row: a two-turn spiral to 45° at 576×768 and 81 frames,
+SeedVR2 ×2, and up to 150K splats for 60K iterations (still under the 150K VR budget after the
+crop; not yet checked in the headset).
+
+Against H3 with the orbit LoRA, both trained the same way (150K splats, 60K iterations), seed 1:
+
+| Subject | Hero PSNR / LPIPS, H3 → proxy | Sharpness ring, H3 → proxy | Likeness ring, H3 → proxy |
+|---|---|---|---|
+| Adventurer | 22.6 / 0.093 → **22.7 / 0.065** (seed 2: 22.5 / 0.068) | 0.39 → **0.62** | 0.68 → 0.69 |
+| Knight | 21.3 / 0.071 → **22.1 / 0.057** | 0.38 → **0.52** | **0.89** → 0.82 |
+| Raincoat | 20.8 / 0.048 → 20.0 / 0.046 | 0.43 → **0.58** | **0.55** → 0.47 |
+| Scooter | 19.4 / 0.077 → 18.9 / 0.079 | 0.46 → 0.48 | **0.80** → 0.66 |
+| Tank | 18.5 / 0.043 → 18.5 / 0.044 | 0.33 → 0.39 | **0.89** → 0.58 |
+
+- The proxy orbit matches or beats H3 on the hero view and is sharper on every subject, with a top
+  that is formed instead of smeared. H3 keeps the hero's look around the ring better on four of
+  five: the proxy's shape is TripoSplat's, and the video follows it. A better proxy is the next
+  lever for hard-surface subjects.
+- Starting the clips from the proxy's color render (`orbit_video.init`) helped the tank (19.6 / 0.040,
+  likeness 0.71) and hurt the adventurer (its pale proxy colors came through on the back), so it
+  stays an option.
+- Two failures, both fixed. Once, Wan returned 81 frames of pure noise; the same run in a fresh
+  ComfyUI was fine, and the orbit stage now stops when the first frame (pinned to the hero, normally
+  31–32 dB against it) does not match it. And on the glossy scooter, SIFT found too few matches
+  from above, bundle adjustment pulled the cameras off the path (median 5–6% of the radius, focal
+  13% off) and the splat broke apart. When bundle adjustment looks that unreliable, the poses stage
+  now keeps the path's cameras unadjusted: the video follows them closely (silhouette IoU 0.95 per
+  elevation band), and the scooter trained clean.
+
+Where it stands, and what is next (Oct 4):
+
+- Worth making the default for a public tool: the license question goes away, the hero view is as
+  good or better, the splats are sharper and the top is real coverage. Not done: the shapes of
+  hard-surface subjects are the proxy's, measured with one seed per subject (two for the adventurer
+  and the tank).
+- Next: a better proxy for hard surfaces (TRELLIS, MIT, gives Gaussians directly; Step1X-3D,
+  Apache-2.0; TripoSG, MIT, geometry only, is enough for depth), the 135K-splat exports in the
+  headset, more seeds, and a way to make chained clips agree (render the first splat into the
+  later clips as kept content, as VideoFrom3D does, or per-image appearance in training).
+
 ## The quality gate
 
 Failure modes seen, and the check that caught each one:
