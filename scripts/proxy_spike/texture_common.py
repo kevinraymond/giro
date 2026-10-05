@@ -115,30 +115,45 @@ def load_cameras(path: Path) -> dict[str, PoseCamera]:
 
 
 class Source:
-    """One view that paints the mesh: its image and mask-edge feather on the GPU."""
+    """One view that paints the mesh: its image and mask-edge feather on the GPU, and optionally
+    a warp: a coarse grid of 2D offsets in pixels, (2, rows, cols) over the image, added to where
+    each sample lands before its color (and feather) is read (warp_views.py)."""
 
     def __init__(self, name: str, img: Image.Image, mask: np.ndarray, cam: Any, boost: float, dev: torch.device,
-                 feather_px: float = 8.0):
+                 feather_px: float = 8.0, warp: torch.Tensor | None = None):
         self.name, self.img, self.mask, self.cam, self.boost = name, img, mask, cam, boost
         self.w, self.h = img.size
         inner = ndimage.binary_erosion(mask, iterations=2)
         feather = np.clip(ndimage.distance_transform_edt(inner) / feather_px, 0, 1).astype(np.float32)
         self.feather = torch.from_numpy(feather).to(dev)[None]
         self.rgb = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255).permute(2, 0, 1).to(dev)
+        self.warp = warp.to(dev) if warp is not None else None
+
+    def warped(self, u: torch.Tensor, vv: torch.Tensor, warp: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        warp = self.warp if warp is None else warp
+        if warp is None:
+            return u, vv
+        d = sample(warp, u, vv, self.w, self.h)  # the grid spans the image, read bilinearly
+        return u + d[:, 0], vv + d[:, 1]
+
+    def visible(self, xyz: torch.Tensor, nrm: torch.Tensor, tol: float, cam: Any = None
+                ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Where every sample lands (u, v) and its weight before the feather: |cos| of the viewing
+        angle to the 4th power where it lands in view and no nearer surface covers it, else 0."""
+        cam = cam or self.cam
+        u, vv, z = project(cam, self.w, self.h, xyz)
+        ok, _, zmin, _ = zbuffer(u, vv, z, self.w, self.h)
+        to_cam = torch.tensor(np.asarray(cam.position()), device=xyz.device, dtype=torch.float32) - xyz
+        cos = (nrm * to_cam).sum(1).abs() / to_cam.norm(dim=1)
+        return u, vv, torch.where(ok & (z <= zmin + tol), self.boost * cos**4, torch.zeros_like(cos))
 
     def paint(self, xyz: torch.Tensor, nrm: torch.Tensor, tol: float, cam: Any = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Colors and weights for every sample from camera `cam` (default: its own). A sample is
         painted where it lands inside the mask and no nearer surface covers it; the weight is
         |cos| of the viewing angle to the 4th power, times the feather from the mask's edge."""
-        cam = cam or self.cam
-        u, vv, z = project(cam, self.w, self.h, xyz)
-        ok, _, zmin, _ = zbuffer(u, vv, z, self.w, self.h)
-        visible = ok & (z <= zmin + tol)
-        fe = sample(self.feather, u, vv, self.w, self.h)[:, 0]
-        to_cam = torch.tensor(np.asarray(cam.position()), device=xyz.device, dtype=torch.float32) - xyz
-        cos = (nrm * to_cam).sum(1).abs() / to_cam.norm(dim=1)
-        wt = torch.where(visible, self.boost * cos**4 * fe, torch.zeros_like(cos))
-        return sample(self.rgb, u, vv, self.w, self.h), wt
+        u, vv, wt = self.visible(xyz, nrm, tol, cam)
+        uw, vw = self.warped(u, vv)
+        return sample(self.rgb, uw, vw, self.w, self.h), wt * sample(self.feather, uw, vw, self.w, self.h)[:, 0]
 
 
 def smooth_field(xyz: torch.Tensor, values: torch.Tensor, weights: torch.Tensor, voxel: float, sigma_vox: float

@@ -52,6 +52,7 @@ ap.add_argument("--skip", default="02,05", help="anchors left out")
 ap.add_argument("--points", type=int, default=6_000_000, help="surface samples")
 ap.add_argument("--paint-tol", type=float, default=0.012, help="depth tolerance for painting, proxy units")
 ap.add_argument("--cameras", type=Path, help="register_photometric.py's anchor cameras (else silhouette fits)")
+ap.add_argument("--warps", type=Path, help="warp_views.py's per-view warp grids")
 ap.add_argument("--select-power", type=float, default=0.0,
                 help="view selection: weights times their local average (1 cm voxels, sigma 2) to this power, "
                      "so each region takes its regionally best view (0: off)")
@@ -139,9 +140,10 @@ report["fits"] = {n: {"camera": c.to_json(), "iou": round(float(iou(points.silho
 # slanted surface); rendering tighter (keeps the far side out of the frames).
 PAINT_TOL = args.paint_tol
 RENDER_TOL = 0.005
+warps = torch.load(args.warps) if args.warps else {}
 cols, weights = [], []
 for name, img, mask, cam, boost in sources:
-    rgb, wt = Source(name, img, mask, cam, boost, dev, FEATHER_PX).paint(xyz, nrm, PAINT_TOL)
+    rgb, wt = Source(name, img, mask, cam, boost, dev, FEATHER_PX, warps.get(name)).paint(xyz, nrm, PAINT_TOL)
     cols.append(rgb.half() if args.views else rgb)
     weights.append(wt)
     if not args.views:
