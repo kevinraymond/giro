@@ -58,6 +58,9 @@ ap.add_argument("--select-power", type=float, default=0.0,
 ap.add_argument("--level-voxel", default="",
                 help="seam leveling: each anchor's low frequencies (voxels this size, sigma 1.5) pulled to the "
                      "other views' blend, coarse to fine for a list (0.1,0.03); the hero is kept (empty: off)")
+ap.add_argument("--views", type=Path, help="paint from this attempt's frames (frames/, masks/frames/, "
+                "cameras.json; e.g. enhanced renders) instead of the anchors; the hero stays")
+ap.add_argument("--views-every", type=int, default=2, help="with --views, every Nth frame")
 ap.add_argument("--out", default="attempt", help="attempt directory name under WORK")
 args = ap.parse_args()
 attempt, adir, work = args.attempt.resolve(), args.anchor_dir.resolve(), args.work.resolve()
@@ -105,8 +108,16 @@ hero_cam, fit = fit_hero_camera(points, hero_img, hero_mask, fov)
 hero_cam, hero_iou = refine(hero_cam, hero_mask)
 print(f"hero: yaw {hero_cam.yaw:.1f} pitch {hero_cam.pitch:.1f} IoU {hero_iou:.3f}", flush=True)
 sources = [("hero", hero_img, hero_mask, hero_cam, HERO_WEIGHT)]
-reg = json.loads((adir / "registration.json").read_text())
+reg = {} if args.views else json.loads((adir / "registration.json").read_text())
 solved = load_cameras(cameras_file) if cameras_file else {}
+if args.views:
+    vdir = args.views.resolve()
+    for k, c in enumerate(json.loads((vdir / "cameras.json").read_text())["frames"]):
+        if k % args.views_every == 0:
+            name = f"frames/{k:05d}.png"
+            sources.append((name, Image.open(vdir / name).convert("RGB"), np.asarray(Image.open(vdir / "masks" / name)) > 127,
+                            campath.PathCamera.from_json(c), 1.0))
+    print(f"{len(sources) - 1} views from {vdir.name}", flush=True)
 for name in sorted(reg):
     if name in skip:
         continue
@@ -131,43 +142,45 @@ RENDER_TOL = 0.005
 cols, weights = [], []
 for name, img, mask, cam, boost in sources:
     rgb, wt = Source(name, img, mask, cam, boost, dev, FEATHER_PX).paint(xyz, nrm, PAINT_TOL)
-    cols.append(rgb)
+    cols.append(rgb.half() if args.views else rgb)
     weights.append(wt)
-    print(f"{name}: paints {(wt > 0).float().mean():.1%} of the surface", flush=True)
+    if not args.views:
+        print(f"{name}: paints {(wt > 0).float().mean():.1%} of the surface", flush=True)
 
-# Exposure: each anchor matched to the hero (or to the blend of the views already matched).
-gains = {}
-order = sorted(range(1, len(sources)), key=lambda i: -float(((weights[i] > 0.1) & (weights[0] > 0.1)).sum()))
-for i in order:
-    ref_w = torch.stack([weights[j] for j in [0] + [k for k in order if k in gains]]).sum(0) if gains else weights[0]
-    ref_c = (sum(weights[j][:, None] * cols[j] for j in [0] + [k for k in order if k in gains])
-             / ref_w.clamp_min(1e-6)[:, None]) if gains else cols[0]
-    both = (weights[i] > 0.1) & (ref_w > 0.1)
-    if both.sum() < 2000:
-        gains[i] = None
-        continue
-    a, b = cols[i][both], ref_c[both]
-    # Spreads matched, not a least-squares fit: views a degree or two apart barely correlate per
-    # sample, and a regression slope then shrinks toward 0 (washed out, shadows lifted).
-    gain = b.std(0) / a.std(0).clamp_min(1e-6)
-    gain = gain.clamp(0.7, 1.4)
-    offset = b.mean(0) - gain * a.mean(0)
-    cols[i] = (cols[i] * gain + offset).clamp(0, 1)
-    gains[i] = (gain.tolist(), offset.tolist(), int(both.sum()))
-report["exposure"] = {sources[i][0]: gv for i, gv in gains.items()}
+if not args.views:  # anchors only: rendered views already agree in exposure, and n^2 is slow for ~100
+    # Exposure: each anchor matched to the hero (or to the blend of the views already matched).
+    gains = {}
+    order = sorted(range(1, len(sources)), key=lambda i: -float(((weights[i] > 0.1) & (weights[0] > 0.1)).sum()))
+    for i in order:
+        ref_w = torch.stack([weights[j] for j in [0] + [k for k in order if k in gains]]).sum(0) if gains else weights[0]
+        ref_c = (sum(weights[j][:, None] * cols[j] for j in [0] + [k for k in order if k in gains])
+                 / ref_w.clamp_min(1e-6)[:, None]) if gains else cols[0]
+        both = (weights[i] > 0.1) & (ref_w > 0.1)
+        if both.sum() < 2000:
+            gains[i] = None
+            continue
+        a, b = cols[i][both], ref_c[both]
+        # Spreads matched, not a least-squares fit: views a degree or two apart barely correlate per
+        # sample, and a regression slope then shrinks toward 0 (washed out, shadows lifted).
+        gain = b.std(0) / a.std(0).clamp_min(1e-6)
+        gain = gain.clamp(0.7, 1.4)
+        offset = b.mean(0) - gain * a.mean(0)
+        cols[i] = (cols[i] * gain + offset).clamp(0, 1)
+        gains[i] = (gain.tolist(), offset.tolist(), int(both.sum()))
+    report["exposure"] = {sources[i][0]: gv for i, gv in gains.items()}
 
-# Agreement: how far each source's colors are from the other sources' blend where both see the
-# surface well (mean absolute difference, 0-1). Misregistered views disagree more.
-report["disagreement"] = {}
-for i, (name, *_rest) in enumerate(sources):
-    others = sum(weights[j] for j in range(len(sources)) if j != i)
-    blend = sum(weights[j][:, None] * cols[j] for j in range(len(sources)) if j != i) / others.clamp_min(1e-6)[:, None]
-    both = (weights[i] > 0.1) & (others > 0.1)
-    report["disagreement"][name] = round(float((cols[i][both] - blend[both]).abs().mean()), 4) if both.sum() > 2000 else None
-print("disagreement:", report["disagreement"], flush=True)
+    # Agreement: how far each source's colors are from the other sources' blend where both see the
+    # surface well (mean absolute difference, 0-1). Misregistered views disagree more.
+    report["disagreement"] = {}
+    for i, (name, *_rest) in enumerate(sources):
+        others = sum(weights[j] for j in range(len(sources)) if j != i)
+        blend = sum(weights[j][:, None] * cols[j] for j in range(len(sources)) if j != i) / others.clamp_min(1e-6)[:, None]
+        both = (weights[i] > 0.1) & (others > 0.1)
+        report["disagreement"][name] = round(float((cols[i][both] - blend[both]).abs().mean()), 4) if both.sum() > 2000 else None
+    print("disagreement:", report["disagreement"], flush=True)
 
-# Seam leveling (cf. Waechter et al., ECCV 2014): each anchor's colors corrected by the smooth
-# difference to the other views' blend where both see the surface; detail stays, lighting evens out.
+    # Seam leveling (cf. Waechter et al., ECCV 2014): each anchor's colors corrected by the smooth
+    # difference to the other views' blend where both see the surface; detail stays, lighting evens out.
 for level_voxel in [float(x) for x in args.level_voxel.split(",") if x]:
     for i in range(1, len(sources)):
         others = [j for j in range(len(sources)) if j != i]
@@ -188,18 +201,26 @@ if args.select_power:
     rel = local / local.max(0).values.clamp_min(1e-9)  # 1 for the regionally best view
     weights = [wt * rel[i] ** args.select_power for i, wt in enumerate(weights)]
 
-W = torch.stack(weights) ** 2
-total = W.sum(0)
+total = torch.zeros_like(weights[0])
+acc = torch.zeros_like(base_rgb)
+best = torch.zeros_like(weights[0])
+winner = torch.full_like(weights[0], -1, dtype=torch.long)
+for i, (wt, c) in enumerate(zip(weights, cols)):  # one view at a time: ~100 views do not fit stacked
+    w2 = wt**2
+    total += w2
+    acc += w2[:, None] * c.float()
+    winner = torch.where(w2 > best, i, winner)
+    best = torch.maximum(best, w2)
 painted = total > 1e-8
-rgb = torch.where(painted[:, None], (W[:, :, None] * torch.stack(cols)).sum(0) / total.clamp_min(1e-12)[:, None], base_rgb)
-winner = torch.where(painted, W.argmax(0), torch.full_like(total, -1, dtype=torch.long))
+rgb = torch.where(painted[:, None], acc / total.clamp_min(1e-12)[:, None], base_rgb)
+winner = torch.where(painted, winner, -1)
 report["painted"] = round(float(painted.float().mean()), 4)
 print(f"painted {painted.float().mean():.1%} of the surface; the rest keeps the mesh's colors", flush=True)
-del W
+del acc, best
 
 # Check sheet: each source with its fit outlined.
 tiles = []
-for name, img, mask, cam, _ in sources:
+for name, img, mask, cam, _ in sources[:12]:
     th = 320
     tw = round(th * img.width / img.height)
     sil = points.silhouette(cam, tw, th)
