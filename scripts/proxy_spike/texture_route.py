@@ -9,8 +9,9 @@ skips what OUT already has.
   4. silhouette fits, photometric registration (anchors that still disagree are dropped), warp
      grids (project_texture.py, register_photometric.py, warp_views.py)
   5. texture with view selection, then region patches (patch_region.py), optionally a generative
-     fill of what no view painted (fill_unseen.py), then 188 renders
-  6. training with the attempt's own settings (giro stages --from dataset), max splats 300K
+     fill of what no view painted (fill_unseen.py), then 188 renders (2x supersampled, soft masks)
+  6. training with the attempt's own settings (giro stages --from dataset), max splats 300K, masks not
+     eroded
 
     texture_route.py ATTEMPT OUT GPU [--seeds 6] [--angles DIR] [--seed mesh_pixal3d_N.npz]
         [--patch "license plate::Make the license plate ...::180::10"] [--fill "desert tan M1 Abrams tank"]
@@ -144,7 +145,10 @@ params = []
 for st in ("dataset", "train", "crop", "canonicalize", "export"):
     for k, v in json.loads((attempt / ".stages" / f"{st}.json").read_text())["params"].items():
         params += ["-p", f"{st}.{k}={json.dumps(v)}"]
-run("giro", "stages", str(work / "attempt"), "--from", "dataset", "--gpu", g, *params, "-p", f"train.max_splats={args.max_splats}", cwd=ROOT)
+# The renders' masks are exact and soft at the edges (project_texture.py --supersample): the erosion meant
+# for SAM masks would binarize them and train each part's outer pixels transparent.
+run("giro", "stages", str(work / "attempt"), "--from", "dataset", "--gpu", g, *params, "-p", f"train.max_splats={args.max_splats}",
+    "-p", "dataset.mask_erode_px=0", cwd=ROOT)
 m = json.loads((work / "attempt" / "metrics.json").read_text())
 route["result"] = {"n_gaussians": m["export"]["n_gaussians"], "train_seconds": m["train"]["train_seconds"]}
 save()

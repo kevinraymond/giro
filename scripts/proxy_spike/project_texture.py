@@ -67,6 +67,9 @@ ap.add_argument("--save-texture", type=Path, help="write the painted samples' co
 ap.add_argument("--texture", type=Path, help="render this saved texture (patch_region.py's output) instead of painting")
 ap.add_argument("--rings", help="cameras to render, PITCH:VIEWS,... (default -20:24,0:48,20:48,40:36,60:24,80:8)")
 ap.add_argument("--out", default="attempt", help="attempt directory name under WORK")
+ap.add_argument("--supersample", type=int, default=2,
+                help="render the frames this many times larger and shrink them: antialiased edges, and soft masks "
+                     "(coverage) to train with dataset.mask_erode_px=0 (Oct 5, tank: cleaner silhouettes; 1: hard edges)")
 args = ap.parse_args()
 attempt, adir, work = args.attempt.resolve(), args.anchor_dir.resolve(), args.work.resolve()
 skip = set(args.skip.split(","))
@@ -290,11 +293,28 @@ palette = torch.tensor(np.array([[0.6, 0.6, 0.6]] + [list(np.random.default_rng(
 palette[1] = torch.tensor([1.0, 1.0, 1.0], device=dev)  # the hero paints white
 cov_tiles = []
 lines = []
+
+
+def shrink(img: np.ndarray, mask: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    """k x k blocks to one pixel: the color averaged over the block's subject pixels only (so an
+    edge pixel keeps the subject's color, not a blend with the background) and the subject's
+    coverage of the block as the mask."""
+    hh, ww = mask.shape[0] // k, mask.shape[1] // k
+    m = mask.astype(np.float32).reshape(hh, k, ww, k)
+    num = (img.reshape(hh, k, ww, k, -1) * m[..., None]).sum((1, 3))
+    cov = m.sum((1, 3))
+    return num / np.maximum(cov, 1e-6)[..., None], cov / (k * k)
+
+
+ss = args.supersample
 for i, cam in enumerate(cams):
-    img, mask = render_view(cam, w, h, rgb)
+    img, mask = render_view(cam, w * ss, h * ss, rgb)
+    alpha = mask.astype(np.float32)
+    if ss > 1:
+        img, alpha = shrink(img, mask, ss)
     name = f"frames/{i:05d}.png"
     Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8)).save(out / name)
-    Image.fromarray(mask.astype(np.uint8) * 255, "L").save(out / "masks" / name)
+    Image.fromarray((alpha * 255).round().astype(np.uint8), "L").save(out / "masks" / name)
     rot, t = cam.world_to_camera()
     lines.append(f"{i + 1} {' '.join(f'{x:.12g}' for x in _qvec(rot))} {' '.join(f'{x:.12g}' for x in t)} 1 {name}\n\n")
     if i % 8 == 0:

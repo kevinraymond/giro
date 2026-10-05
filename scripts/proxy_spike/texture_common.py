@@ -266,10 +266,13 @@ def bake(src: Source, erode: int = 2) -> tuple[np.ndarray, np.ndarray]:
     return (rgb.permute(1, 2, 0).cpu().numpy() * m[..., None] * 255).clip(0, 255).astype(np.uint8), m
 
 
-def qwen_edit_workflow(image: str, prompt: str, seed: int = 1, prefix: str = "giro/edit", mask: str | None = None) -> dict:
+def qwen_edit_workflow(image: str, prompt: str, seed: int = 1, prefix: str = "giro/edit", mask: str | None = None,
+                       ref: str | None = None, denoise: float = 1.0) -> dict:
     """Qwen-Image-Edit 2511 (Apache-2.0), Lightning 4 steps, on one uploaded image. With `mask` (an
     uploaded image, white = repaint) the sampling is masked: only those pixels change, so the edit
-    cannot move the camera (unmasked, it turns unusual views, a tank from below, into usual ones)."""
+    cannot move the camera (unmasked, it turns unusual views, a tank from below, into usual ones).
+    `ref` is a second uploaded image the prompt can name as picture 2 (the output keeps picture 1's
+    size); `denoise` below 1 starts from the image itself, partly noised."""
     wf = {
         "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_edit_2511_int8_convrot.safetensors", "weight_dtype": "default"}},
         "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
@@ -287,10 +290,17 @@ def qwen_edit_workflow(image: str, prompt: str, seed: int = 1, prefix: str = "gi
         "negr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["neg", 0], "reference_latents_method": "index_timestep_zero"}},
         "sample": {"class_type": "KSampler", "inputs": {"model": ["lightning", 0], "positive": ["posr", 0], "negative": ["negr", 0],
                    "latent_image": ["latent", 0], "seed": seed, "steps": 4, "cfg": 1.0, "sampler_name": "euler",
-                   "scheduler": "simple", "denoise": 1.0}},
+                   "scheduler": "simple", "denoise": denoise}},
         "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
         "save": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": prefix}},
     }
+    if ref:
+        wf |= {
+            "ref_img": {"class_type": "LoadImage", "inputs": {"image": ref, "upload": "image"}},
+            "ref_scaled": {"class_type": "FluxKontextImageScale", "inputs": {"image": ["ref_img", 0]}},
+        }
+        wf["pos"]["inputs"]["image2"] = ["ref_scaled", 0]
+        wf["neg"]["inputs"]["image2"] = ["ref_scaled", 0]
     if mask:
         wf |= {
             "mask_img": {"class_type": "LoadImage", "inputs": {"image": mask, "upload": "image"}},
