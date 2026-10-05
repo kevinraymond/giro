@@ -4,6 +4,7 @@ import { AttemptView } from "./AttemptView";
 import { JOB_STATUS, ago, jobName } from "./format";
 import { JobView } from "./JobView";
 import { VrView } from "./lazy";
+import type { Primer, VrItem } from "./VrView";
 import { Library } from "./Library";
 import { NewJob } from "./NewJob";
 import { useStore } from "./store";
@@ -27,17 +28,33 @@ export const go = (...parts: (string | number)[]) => {
   location.hash = "#/" + parts.map((p) => encodeURIComponent(String(p))).join("/");
 };
 
+// fosfora's depth-primer effect (board #3659): each primer mode twice, in mirrored order against drift.
+const BENCH_PRESETS: Record<string, VrItem[]> = {
+  primer: (["floor", "none", "opaque", "opaque", "none", "floor"] as Primer[])
+    .map((primer) => ({ url: "/bench/crowd_245k.spz", label: `245k ${primer}`, primer }))
+    .concat((["none", "opaque"] as Primer[]).map((primer) => ({ url: "/bench/crowd_490k.spz", label: `490k ${primer}`, primer }))),
+};
+
 export function App() {
   const route = useRoute();
   const [page, id, seed, tab] = route;
   // VR pages are the whole window: the Quest browser has little room and no use for the sidebar.
   if (page === "vr" && id && seed) return <VrView items={[{ url: fileUrl(id, `attempts/${seed}/export/splat.spz`), label: `${jobName(id)} · seed ${seed}` }]} />;
   // #/vr-bench/a.spz,b.spz,...: measure each in turn in one VR session.
-  // An item may carry @std=N: Spark's maxStdDev for that item (e.g. crowd_245k.spz@std=2).
+  // An item may carry @std=N (Spark's maxStdDev) and @primer=floor|none|opaque (VrView's Primer),
+  // e.g. crowd_245k.spz@std=2@primer=opaque.
+  // Named sequences, so a URL is short enough to type in the headset: #/vr-bench/primer?scale=1.
+  if (page === "vr-bench" && id && BENCH_PRESETS[id]) {
+    const scale = new URLSearchParams(location.hash.split("?")[1] ?? "").get("scale") ?? "0.6";
+    const next = scale === "1" ? { href: "#/vr-bench/primer?scale=0.6", label: "Run 2: scale 0.6" } : undefined;
+    return <VrView key={scale} items={BENCH_PRESETS[id]} next={next} />;
+  }
   if (page === "vr-bench" && id) return <VrView items={id.split(",").map((item) => {
-    const [f, opt] = item.split("@");
-    const std = opt?.startsWith("std=") ? Number(opt.slice(4)) : undefined;
-    return { url: `/bench/${f}`, label: f.replace(/\.spz$/, "") + (std ? ` std ${std}` : ""), maxStdDev: std };
+    const [f, ...opts] = item.split("@");
+    const opt = Object.fromEntries(opts.map((o) => o.split("=")));
+    const std = opt.std ? Number(opt.std) : undefined;
+    const primer = opt.primer as Primer | undefined;
+    return { url: `/bench/${f}`, label: f.replace(/\.spz$/, "") + (std ? ` std ${std}` : "") + (primer ? ` ${primer}` : ""), maxStdDev: std, primer };
   })} />;
   let main;
   if (page === "job" && id && seed) main = <AttemptView key={`${id}/${seed}`} jobId={id} seed={Number(seed)} tab={tab} />;
