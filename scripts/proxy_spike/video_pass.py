@@ -1,6 +1,6 @@
 """A video model's pass over a projection-texture attempt's renders: each ring of cameras is one
-closed-loop clip (its first frame again at the end: 25, 49, 37 or 9 frames, all 4k+1 as Wan
-wants), re-denoised by Wan 2.2 Fun Control's low-noise expert from SIGMA under the mesh's depth
+closed loop (its first frame again at the end), in chained clips of at most --max-frames (4k+1
+frames, as Wan wants; each clip starts from the frame the one before refined last), re-denoised by Wan 2.2 Fun Control's low-noise expert from SIGMA under the mesh's depth
 (the pipeline's refine pass, workflows.build_refine), with the hero as the appearance reference.
 The renders are one consistent object from every side; the video model's temporal attention is
 meant to make their detail coherent from view to view, as a video orbit's is, while the depth
@@ -36,7 +36,9 @@ ap.add_argument("--sigma", type=float, default=0.35)
 ap.add_argument("--steps", type=int, default=8)
 ap.add_argument("--rings", help="only these rings (indices), e.g. for a quick look; the rest keep the base frames")
 ap.add_argument("--seed", type=int, default=1)
+ap.add_argument("--max-frames", type=int, default=49, help="longest clip; longer rings are chained clips")
 args = ap.parse_args()
+MAX_STEPS = args.max_frames - 1
 source, work = args.source.resolve(), args.work.resolve()
 base, out = work / args.base, work / args.out_name
 cams_json = json.loads((base / "cameras.json").read_text())
@@ -68,34 +70,51 @@ for f in (base / "frames").glob("*.png"):
 
 async def main() -> None:
     stamp = f"giro/{time.strftime('%H%M%S')}-videopass"
+    done_names: set[str] = set()
     with await asyncio.to_thread(server.Lease, args.gpu) as lease:
         async with ComfyClient(lease.url) as comfy:
             try:
                 hero = await comfy.upload_image(source / "hero" / "hero.png")
                 for k in todo:
-                    ring = rings[k] + rings[k][:1]  # closed loop: the first frame again, 4k+1 frames
-                    names = [f"{i:05d}.png" for i in ring]
-                    start = await comfy.upload_image(base / "frames" / names[0])
-                    prompt = workflows.build_refine(
-                        W, H, args.sigma, args.steps,
-                        frames=json.dumps([str(base / "frames" / n) for n in names]),
-                        image=hero, start=start, prompt=workflows.PROXY_ORBIT_PROMPT, seed=args.seed + k,
-                        proxy=str(points), cameras=json.dumps([cams[i].render_json() for i in ring]),
-                        length=len(ring), output_prefix=f"{stamp}/ring{k}")
+                    loop = rings[k] + rings[k][:1]  # closed loop: the first frame again
+                    # Clips of at most MAX_STEPS steps, a multiple of 4 (4k+1 frames, as Wan wants),
+                    # chained: each starts from the frame the one before refined last.
+                    steps = len(loop) - 1
+                    n_clips = next(c for c in range(1, steps + 1) if steps % c == 0 and steps // c <= MAX_STEPS and (steps // c) % 4 == 0)
+                    per = steps // n_clips
                     t0 = time.monotonic()
-                    done = None
-                    async for ev in comfy.run(prompt):
-                        if isinstance(ev, Done):
-                            done = ev
-                    assert done is not None
-                    images = output_images(done, "frames")
-                    assert len(images) == len(ring), f"Wan returned {len(images)} frames for {len(ring)}"
-                    for n, img in zip(names[:-1], images[:-1]):  # the repeated first frame is dropped
-                        await comfy.download(img, out / "frames" / n)
-                        im = Image.open(out / "frames" / n).convert("RGB")
-                        if im.size != (W, H):
-                            im.resize((W, H), Image.LANCZOS).save(out / "frames" / n)
-                    print(f"ring {k} (pitch {cams[ring[0]].pitch:.0f}, {len(ring)} frames): {time.monotonic() - t0:.0f} s", flush=True)
+                    for c in range(n_clips):
+                        clip = loop[c * per:(c + 1) * per + 1]
+                        names = [f"{i:05d}.png" for i in clip]
+                        first = out / "frames" / names[0] if c else base / "frames" / names[0]
+                        start = await comfy.upload_image(first)
+                        prompt = workflows.build_refine(
+                            W, H, args.sigma, args.steps,
+                            frames=json.dumps([str(base / "frames" / n) for n in names]),
+                            image=hero, start=start, prompt=workflows.PROXY_ORBIT_PROMPT, seed=args.seed + k,
+                            proxy=str(points), cameras=json.dumps([cams[i].render_json() for i in clip]),
+                            length=len(clip), output_prefix=f"{stamp}/ring{k}-{c}")
+                        done = None
+                        async for ev in comfy.run(prompt):
+                            if isinstance(ev, Done):
+                                done = ev
+                        assert done is not None
+                        images = output_images(done, "frames")
+                        assert len(images) == len(clip), f"Wan returned {len(images)} frames for {len(clip)}"
+                        # A clip's last frame is the next clip's first (or, last of all, the ring's first):
+                        # kept only where nothing refined it yet.
+                        for i, (n, img) in enumerate(zip(names, images)):
+                            if i == len(names) - 1 and (c == n_clips - 1 or n in done_names):
+                                continue
+                            if i == 0 and c > 0:
+                                continue
+                            await comfy.download(img, out / "frames" / n)
+                            done_names.add(n)
+                            im = Image.open(out / "frames" / n).convert("RGB")
+                            if im.size != (W, H):
+                                im.resize((W, H), Image.LANCZOS).save(out / "frames" / n)
+                    print(f"ring {k} (pitch {cams[loop[0]].pitch:.0f}, {steps} views, {n_clips} clip(s) of {per + 1} frames): "
+                          f"{time.monotonic() - t0:.0f} s", flush=True)
             finally:
                 await comfy.free()
 

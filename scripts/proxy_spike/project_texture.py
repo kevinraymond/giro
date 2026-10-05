@@ -65,6 +65,7 @@ ap.add_argument("--views", type=Path, help="paint from this attempt's frames (fr
 ap.add_argument("--views-every", type=int, default=2, help="with --views, every Nth frame")
 ap.add_argument("--save-texture", type=Path, help="write the painted samples' colors here (patch_region.py reads them)")
 ap.add_argument("--texture", type=Path, help="render this saved texture (patch_region.py's output) instead of painting")
+ap.add_argument("--rings", help="cameras to render, PITCH:VIEWS,... (default -20:24,0:48,20:48,40:36,60:24,80:8)")
 ap.add_argument("--out", default="attempt", help="attempt directory name under WORK")
 args = ap.parse_args()
 attempt, adir, work = args.attempt.resolve(), args.anchor_dir.resolve(), args.work.resolve()
@@ -74,6 +75,8 @@ cameras_file = args.cameras.resolve() if args.cameras else None
 dev = torch.device(f"cuda:{args.gpu}")
 FRAME_SIZE = (768, 1024)
 RINGS = [(-20, 24), (0, 48), (20, 48), (40, 36), (60, 24), (80, 8)]  # (pitch, views); + looks down
+if args.rings:
+    RINGS = [(float(p), int(n)) for p, n in (r.split(":") for r in args.rings.split(","))]
 FIT_REFINE_HEIGHT = 512
 HERO_WEIGHT = 2.0
 FEATHER_PX = 8
