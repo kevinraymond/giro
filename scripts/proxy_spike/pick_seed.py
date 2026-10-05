@@ -119,7 +119,7 @@ for name in sorted(scores, key=lambda k: -scores[k]["score"]):
     for k, (yaw, zoom) in enumerate(((0, 1.0), (300, 0.55), (60, 0.55), (180, 1.0))):
         tgt = np.asarray(hero.target) + (np.array([0, 0.25, -0.25]) if zoom < 1 else 0)
         cam = campath.PathCamera(hero.yaw + yaw, 5.0, hero.distance * zoom, tuple(tgt.tolist()), hero.fov)
-        img, _ = render_points(xyz, shade, cam, 300, 400)
+        img, _ = render_points(xyz, shade, cam, 300, 400, nrm=nrm)
         row.paste(Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8)), (k * 300, 0))
     ImageDraw.Draw(row).text((6, 6), f"{name}  edge F1 {scores[name]['score']:.4f}", fill=(255, 255, 0))
     rows.append(row)

@@ -86,18 +86,34 @@ def project(cam: Any, w: int, h: int, pts: torch.Tensor) -> tuple[torch.Tensor, 
     return fl * pc[:, 0] / zs + w / 2, fl * pc[:, 1] / zs + h / 2, z
 
 
-def zbuffer(u: torch.Tensor, vv: torch.Tensor, z: torch.Tensor, w: int, h: int
+MIN_COS = 0.3  # slope slack stops growing past ~72 degrees: more let a steep surface behind a nearer part mix in
+
+
+def slope_slack(cam: Any, w: int, h: int, xyz: torch.Tensor, nrm: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+    """Per sample, how far behind the nearest depth over 3x3 pixels its own surface may lie: 1.5
+    pixel footprints times the tangent of its viewing angle, the depth a slanted surface changes
+    across that window (a deck seen from 20 degrees up: about twice 0.005 per pixel). Normals face
+    either way on these meshes, so |cos|; samples without a normal (zero rows) get none."""
+    to_cam = torch.tensor(np.asarray(cam.position()), device=xyz.device, dtype=torch.float32) - xyz
+    cos = ((nrm * to_cam).sum(1).abs() / to_cam.norm(dim=1)).clamp(MIN_COS, 1)
+    tan = (1 - cos**2).sqrt() / cos
+    return torch.where(nrm.norm(dim=1) > 0.5, 1.5 * z / cam.focal(w, h) * tan, torch.zeros_like(z))
+
+
+def zbuffer(u: torch.Tensor, vv: torch.Tensor, z: torch.Tensor, w: int, h: int, slack: torch.Tensor | None = None
             ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Per sample: in view, its pixel index, and the nearest depth around that pixel; and that
-    depth per pixel (inf where nothing). The nearest depth is taken over 3x3 pixels: a pixel the
-    front surface's samples happen to miss would otherwise let the surface behind it through
-    (speckles of the wrong part's color)."""
+    """Per sample: in view, its pixel index, and the deepest its pixel's front surface reaches; and
+    the nearest depth per pixel over 3x3 pixels (inf where nothing). The nearest depth is taken
+    over 3x3 pixels: a pixel the front surface's samples happen to miss would otherwise let the
+    surface behind it through (speckles of the wrong part's color). Plus each sample's `slack`
+    (slope_slack): without it a slanted surface lost most of its samples to its own nearer
+    neighbors, and the renders filled those gaps with smears and holes."""
     ok = (z > 1e-3) & (u >= 0) & (u < w) & (vv >= 0) & (vv < h)
     pix = torch.where(ok, vv.long().clamp(0, h - 1) * w + u.long().clamp(0, w - 1), torch.zeros_like(z, dtype=torch.long))
     zmin = torch.full((w * h,), float("inf"), device=z.device)
     zmin.scatter_reduce_(0, pix[ok], z[ok], reduce="amin")
     zmin = -F.max_pool2d(-zmin.reshape(1, 1, h, w), 3, stride=1, padding=1).reshape(-1)
-    return ok, pix, zmin[pix], zmin.reshape(h, w)
+    return ok, pix, zmin[pix] + (0 if slack is None else slack), zmin.reshape(h, w)
 
 
 def sample(img: torch.Tensor, u: torch.Tensor, vv: torch.Tensor, w: int, h: int) -> torch.Tensor:
@@ -144,7 +160,7 @@ class Source:
         angle to the 4th power where it lands in view and no nearer surface covers it, else 0."""
         cam = cam or self.cam
         u, vv, z = project(cam, self.w, self.h, xyz)
-        ok, _, zmin, _ = zbuffer(u, vv, z, self.w, self.h)
+        ok, _, zmin, _ = zbuffer(u, vv, z, self.w, self.h, slope_slack(cam, self.w, self.h, xyz, nrm, z))
         to_cam = torch.tensor(np.asarray(cam.position()), device=xyz.device, dtype=torch.float32) - xyz
         cos = (nrm * to_cam).sum(1).abs() / to_cam.norm(dim=1)
         return u, vv, torch.where(ok & (z <= zmin + tol), self.boost * cos**4, torch.zeros_like(cos))
@@ -188,13 +204,14 @@ def smooth_field(xyz: torch.Tensor, values: torch.Tensor, weights: torch.Tensor,
     return (out[:c].T / den_b.clamp_min(1e-9)[:, None]), den_b
 
 
-def render_points(xyz: torch.Tensor, values: torch.Tensor, cam: Any, w: int, h: int, tol: float = 0.005
-                  ) -> tuple[np.ndarray, np.ndarray]:
-    """The samples' `values` seen from `cam`: the nearest layer per pixel (within `tol`) averaged,
-    pinholes closed from the neighbors; returns the image (h, w, C) and the subject's mask."""
+def render_points(xyz: torch.Tensor, values: torch.Tensor, cam: Any, w: int, h: int, tol: float = 0.005, *,
+                  nrm: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
+    """The samples' `values` seen from `cam`: the nearest layer per pixel (within `tol` and the
+    sample's slope_slack, from its normal `nrm`) averaged, pinholes closed from the neighbors;
+    returns the image (h, w, C) and the subject's mask."""
     dev = xyz.device
     u, vv, z = project(cam, w, h, xyz)
-    ok, pix, zmin, _ = zbuffer(u, vv, z, w, h)
+    ok, pix, zmin, _ = zbuffer(u, vv, z, w, h, slope_slack(cam, w, h, xyz, nrm, z))
     front = ok & (z <= zmin + tol)
     acc = torch.zeros((w * h, values.shape[1]), device=dev).index_add_(0, pix[front], values[front].float())
     n = torch.zeros(w * h, device=dev).index_add_(0, pix[front], torch.ones_like(z[front]))

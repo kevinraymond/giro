@@ -29,7 +29,7 @@ from giro import path as campath
 from giro.comfy import server
 from giro.comfy.client import ComfyClient, Done
 from giro.stages.masks import Masks, sam_workflow
-from texture_common import fingerprint, project, qwen_edit_workflow, render_points, sample, samples, zbuffer
+from texture_common import fingerprint, project, qwen_edit_workflow, render_points, sample, samples, slope_slack, zbuffer
 
 ap = argparse.ArgumentParser()
 ap.add_argument("attempt", type=Path)
@@ -53,7 +53,7 @@ out = work / f"patch-{re.sub(r'[^a-z0-9]+', '-', args.find.lower()).strip('-')}-
 out.mkdir(exist_ok=True)
 
 saved = torch.load(args.texture)
-xyz, _, _, _ = samples(work, saved["points"], dev)
+xyz, nrm, _, _ = samples(work, saved["points"], dev)
 assert abs(saved["fingerprint"] - fingerprint(xyz)) < 1e-3, f"{args.texture} was painted on other samples"
 rgb = saved["rgb"].to(dev).float()
 hero = campath.PathCamera.from_json(json.loads((work / "texture.json").read_text())["fits"]["hero"]["camera"])
@@ -61,7 +61,7 @@ S = args.size
 
 
 def save_render(cam: campath.PathCamera, name: str) -> tuple[Path, np.ndarray]:
-    img, mask = render_points(xyz, rgb, cam, S, S)
+    img, mask = render_points(xyz, rgb, cam, S, S, nrm=nrm)
     path = out / f"{name}.png"
     Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8)).save(path)
     return path, mask
@@ -88,7 +88,7 @@ async def find(comfy: ComfyClient, path: Path) -> np.ndarray:
 def surface_point(cam: campath.PathCamera, mask: np.ndarray) -> tuple[np.ndarray, float]:
     """The region's 3D center (the samples landing in it, nearest layer) and its height in the world."""
     u, v, z = project(cam, S, S, xyz)
-    ok, pix, zmin, _ = zbuffer(u, v, z, S, S)
+    ok, pix, zmin, _ = zbuffer(u, v, z, S, S, slope_slack(cam, S, S, xyz, nrm, z))
     m = torch.from_numpy(mask.reshape(-1)).to(dev)
     hit = ok & (z <= zmin + 0.005) & m[pix]
     pts = xyz[hit].cpu().numpy()
@@ -135,7 +135,7 @@ async def main() -> None:
     Image.fromarray(comp.astype(np.uint8)).save(out / "edited.png")
     Image.fromarray((grown * 255).astype(np.uint8)).save(out / "mask.png")
     u, v, z = project(close, S, S, xyz)
-    ok, _, zmin, _ = zbuffer(u, v, z, S, S)
+    ok, _, zmin, _ = zbuffer(u, v, z, S, S, slope_slack(close, S, S, xyz, nrm, z))
     vis = ok & (z <= zmin + 0.005)
     a = sample(torch.from_numpy(alpha).to(dev)[None], u, v, S, S)[:, 0] * vis
     new = sample(torch.from_numpy(comp / 255).permute(2, 0, 1).to(dev), u, v, S, S)
@@ -146,7 +146,7 @@ async def main() -> None:
                                           "samples": int((a > 0.5).sum())}]
     torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": saved["points"],
                 "fingerprint": saved["fingerprint"], "patches": patches}, args.save)
-    after, _ = render_points(xyz, rgb, close, S, S)
+    after, _ = render_points(xyz, rgb, close, S, S, nrm=nrm)
     sheet = Image.new("RGB", (3 * S, S))
     for k, im in enumerate([before, edited, Image.fromarray((np.clip(after, 0, 1) * 255).astype(np.uint8))]):
         sheet.paste(im, (k * S, 0))

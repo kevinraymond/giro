@@ -25,7 +25,7 @@ from scipy import ndimage
 from giro import path as campath
 from giro.comfy import server
 from giro.comfy.client import ComfyClient, Done
-from texture_common import fingerprint, project, qwen_edit_workflow, render_points, sample, samples, zbuffer
+from texture_common import fingerprint, project, qwen_edit_workflow, render_points, sample, samples, slope_slack, zbuffer
 
 ap = argparse.ArgumentParser()
 ap.add_argument("attempt", type=Path)
@@ -44,7 +44,7 @@ dev = torch.device(f"cuda:{args.gpu}")
 out = work / "fill"
 out.mkdir(exist_ok=True)
 saved = torch.load(args.texture)
-xyz, _, _, _ = samples(work, saved["points"], dev)
+xyz, nrm, _, _ = samples(work, saved["points"], dev)
 assert abs(saved["fingerprint"] - fingerprint(xyz)) < 1e-3, f"{args.texture} was painted on other samples"
 rgb = saved["rgb"].to(dev).float()
 winner = saved["winner"].to(dev)
@@ -56,7 +56,7 @@ PROMPT = (f"A clean, realistic photo of this {args.subject}, exactly this view: 
 
 
 def unpainted_px(cam: campath.PathCamera, size: tuple[int, int]) -> tuple[int, np.ndarray, np.ndarray]:
-    ind, mask = render_points(xyz, (winner < 0).float()[:, None], cam, *size)
+    ind, mask = render_points(xyz, (winner < 0).float()[:, None], cam, *size, nrm=nrm)
     gap = (ind[..., 0] > 0.5) & mask
     return int(gap.sum()), gap, mask
 
@@ -94,7 +94,7 @@ async def main() -> None:
                         print(f"view {k + 1}: best camera sees {n} unpainted px, stopping", flush=True)
                         break
                     cam = cams[best]
-                    img, _ = render_points(xyz, rgb, cam, W, H)
+                    img, _ = render_points(xyz, rgb, cam, W, H, nrm=nrm)
                     img = np.clip(img, 0, 1) * mask[..., None]
                     filled = prefill(img, gap, mask)
                     Image.fromarray((img * 255).astype(np.uint8)).save(out / f"{k:02d}-render.png")
@@ -116,13 +116,13 @@ async def main() -> None:
                     alpha = np.clip(ndimage.gaussian_filter(grown.astype(np.float32), 1.5), 0, 1) * grown
                     # Paint back: unpainted samples in this view's nearest layer, where the edit is used.
                     u, v, z = project(cam, W, H, xyz)
-                    ok, _, zmin, _ = zbuffer(u, v, z, W, H)
+                    ok, _, zmin, _ = zbuffer(u, v, z, W, H, slope_slack(cam, W, H, xyz, nrm, z))
                     a = sample(torch.from_numpy(alpha).to(dev)[None], u, v, W, H)[:, 0]
                     take = ok & (z <= zmin + 0.005) & (winner < 0) & (a > 0.5)
                     new = sample(torch.from_numpy(edit).permute(2, 0, 1).to(dev), u, v, W, H)
                     rgb = torch.where(take[:, None], new, rgb)
                     winner = torch.where(take, torch.full_like(winner, 3000 + k), winner)
-                    after, _ = render_points(xyz, rgb, cam, W, H)
+                    after, _ = render_points(xyz, rgb, cam, W, H, nrm=nrm)
                     tile = np.concatenate([img, filled, edit * mask[..., None], np.clip(after, 0, 1)], 1)
                     Image.fromarray((tile * 255).astype(np.uint8)).resize((W, H // 4)).save(out / f"{k:02d}-sheet.jpg", quality=88)
                     report.append({"camera": best, "unpainted_px": n, "painted_samples": int(take.sum())})

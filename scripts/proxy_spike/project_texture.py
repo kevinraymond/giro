@@ -264,15 +264,16 @@ sheet.save(work / "sources.jpg", quality=88)
 if args.extra:  # points the mesh lacks (thin_parts.py), rendered with the painted samples
     extra = np.load(args.extra)
     xyz_r = torch.cat([xyz, torch.from_numpy(extra["xyz"]).to(dev)])
+    nrm_r = torch.cat([nrm, torch.zeros(len(extra["xyz"]), 3, device=dev)])  # no normals: no slope slack
     rgb = torch.cat([rgb, torch.from_numpy(extra["rgb"]).to(dev)])
     winner = torch.cat([winner, torch.full((len(extra["xyz"]),), -1, device=dev, dtype=winner.dtype)])
     report["extra_points"] = len(extra["xyz"])
 else:
-    xyz_r = xyz
+    xyz_r, nrm_r = xyz, nrm
 
 
 def render_view(cam: campath.PathCamera, w: int, h: int, values: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-    return render_points(xyz_r, values, cam, w, h, RENDER_TOL)
+    return render_points(xyz_r, values, cam, w, h, RENDER_TOL, nrm=nrm_r)
 
 
 out = work / args.out

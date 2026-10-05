@@ -61,7 +61,7 @@ views = [("hero", Image.open(attempt / "hero" / "hero.png").convert("RGB"),
           np.asarray(Image.open(attempt / "proxy" / "hero_mask.png")) > 127,
           PoseCamera.of(campath.PathCamera.from_json(fits["hero"]["camera"])))]
 views += [(n, Image.open(adir / f"{n}.png").convert("RGB"), anchor_mask(adir, n), cams[n]) for n in sorted(cams) if n not in skip]
-xyz, _, _, _ = samples(work, 3_000_000, dev)
+xyz, nrm, _, _ = samples(work, 3_000_000, dev)
 
 # 1. Images with the warps baked in (each pixel resampled from where the warp says it lies), the
 #    background blacked out, and the masks fusion uses.
@@ -162,7 +162,8 @@ vals = torch.cat([torch.full((len(xyz), 3), 0.35, device=dev),
                   torch.from_numpy(np.where(new[:, None], [1.0, 0.1, 0.1], [0.2, 0.9, 0.3]).astype(np.float32)).to(dev)])
 tiles = []
 for yaw in (0, 90, 180, 270):
-    img, _ = render_points(all_xyz, vals, campath.PathCamera(hero.yaw + yaw, 10.0, hero.distance, hero.target, hero.fov), 600, 800)
+    img, _ = render_points(all_xyz, vals, campath.PathCamera(hero.yaw + yaw, 10.0, hero.distance, hero.target, hero.fov), 600, 800,
+                           nrm=torch.cat([nrm, torch.zeros(len(pts), 3, device=dev)]))
     tiles.append(Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8)))
 sheet = Image.new("RGB", (2400, 800))
 for i, t in enumerate(tiles):
