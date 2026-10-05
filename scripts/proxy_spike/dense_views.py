@@ -22,13 +22,12 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image
-from scipy import ndimage
 from scipy.spatial import cKDTree
 
 from giro import path as campath
 from giro import splat
 from giro.stages.fallback import _qvec
-from texture_common import PoseCamera, Source, anchor_mask, load_cameras, render_points, samples
+from texture_common import PoseCamera, Source, anchor_mask, bake, load_cameras, render_points, samples
 
 ap = argparse.ArgumentParser()
 ap.add_argument("attempt", type=Path)
@@ -69,14 +68,7 @@ xyz, _, _, _ = samples(work, 3_000_000, dev)
 lines_c, lines_i, depth = [], [], {}
 for k, (name, img, mask, cam) in enumerate(views):
     w, h = img.size
-    src = Source(name, img, mask, cam, 1.0, dev, warp=warps.get(name))
-    vv, uu = torch.meshgrid(torch.arange(h, device=dev) + 0.5, torch.arange(w, device=dev) + 0.5, indexing="ij")
-    uw, vw = src.warped(uu.reshape(-1), vv.reshape(-1))
-    grid = torch.stack([2 * uw / w - 1, 2 * vw / h - 1], 1).reshape(1, h, w, 2)
-    rgb = torch.nn.functional.grid_sample(src.rgb[None], grid, align_corners=False)[0]
-    m = torch.nn.functional.grid_sample(torch.from_numpy(mask.astype(np.float32)).to(dev)[None, None], grid, align_corners=False)[0, 0] > 0.5
-    m = ndimage.binary_erosion(m.cpu().numpy(), iterations=2)
-    pix = (rgb.permute(1, 2, 0).cpu().numpy() * m[..., None] * 255).clip(0, 255).astype(np.uint8)
+    pix, m = bake(Source(name, img, mask, cam, 1.0, dev, warp=warps.get(name)))
     Image.fromarray(pix).save(out / "images" / f"{name}.png")
     Image.fromarray(m.astype(np.uint8) * 255).save(out / "masks" / f"{name}.png.png")  # fusion: <image name>.png
     f = cam.focal(w, h)

@@ -50,10 +50,10 @@ class PoseCamera:
         return cls(tuple(tuple(map(float, row)) for row in r), tuple(map(float, t)), cam.fov)
 
 
-def samples(work: Path, n: int, dev: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
-    """WORK/mesh.npz in the splat frame (as GiroMeshToSplat moves it), sampled by area: positions,
-    face normals, the mesh's colors, and the spacing between samples."""
-    m = np.load(work / "mesh.npz")
+def samples(work: Path, n: int, dev: torch.device, mesh: str = "mesh.npz") -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+    """WORK/mesh.npz (or WORK/`mesh`) in the splat frame (as GiroMeshToSplat moves it), sampled by
+    area: positions, face normals, the mesh's colors, and the spacing between samples."""
+    m = np.load(work / mesh)
     v = torch.from_numpy(m["vertices"]).to(dev) * torch.tensor([1.0, -1.0, -1.0], device=dev)
     f = torch.from_numpy(m["faces"]).to(dev)
     col = torch.from_numpy(m["colors"]).to(dev).clamp(0, 1)
@@ -213,3 +213,37 @@ def render_points(xyz: torch.Tensor, values: torch.Tensor, cam: Any, w: int, h: 
 def fingerprint(xyz: torch.Tensor) -> float:
     """A checksum of the samples, saved with a texture so it is never read onto other samples."""
     return float(xyz[:: max(1, len(xyz) // 10007)].double().sum())
+
+
+def write_points_ply(work: Path, path: Path, n: int = 262_144, mesh: str = "mesh.npz") -> None:
+    """The mesh's surface as a minimal splat PLY (positions, opaque, colors), what the proxy stage's
+    GiroMeshToSplat writes and Points reads to fit cameras: made from the mesh file itself, so it
+    matches that mesh exactly (the proxy models are not reproducible from their seeds)."""
+    from giro import splat
+    xyz, _, rgb, _ = samples(work, n, torch.device("cpu"), mesh)
+    c0 = 0.28209479177387814
+    rec = np.zeros(n, dtype=[(k, "<f4") for k in ("x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+                                                   "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")])
+    p, c = xyz.numpy(), ((rgb.numpy() - 0.5) / c0)
+    for i, k in enumerate("xyz"):
+        rec[k] = p[:, i]
+    for i in range(3):
+        rec[f"f_dc_{i}"] = c[:, i]
+        rec[f"scale_{i}"] = np.log(0.003)
+    rec["opacity"], rec["rot_0"] = 5.0, 1.0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    splat.write_ply(path, rec)
+
+
+def bake(src: Source, erode: int = 2) -> tuple[np.ndarray, np.ndarray]:
+    """The source's image and mask resampled through its warp, so they match its pinhole camera
+    (a trainer or COLMAP knows no warps); the background is blacked out."""
+    dev = src.rgb.device
+    h, w = src.h, src.w
+    vv, uu = torch.meshgrid(torch.arange(h, device=dev) + 0.5, torch.arange(w, device=dev) + 0.5, indexing="ij")
+    uw, vw = src.warped(uu.reshape(-1), vv.reshape(-1))
+    grid = torch.stack([2 * uw / w - 1, 2 * vw / h - 1], 1).reshape(1, h, w, 2)
+    rgb = F.grid_sample(src.rgb[None], grid, align_corners=False)[0]
+    m = F.grid_sample(torch.from_numpy(src.mask.astype(np.float32)).to(dev)[None, None], grid, align_corners=False)[0, 0] > 0.5
+    m = ndimage.binary_erosion(m.cpu().numpy(), iterations=erode) if erode else m.cpu().numpy()
+    return (rgb.permute(1, 2, 0).cpu().numpy() * m[..., None] * 255).clip(0, 255).astype(np.uint8), m
