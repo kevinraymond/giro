@@ -97,7 +97,10 @@ class OrbitVideo(Stage):
     # "steps" (8)}, a second pass over each clip at that size (_refine); "init": {"sigma" (0.9),
     # "steps" (16)}, each clip starts from the proxy's color render noised to sigma, not from noise;
     # "upscale": {"scale" (2), "model", "color" ("lab")}, SeedVR2 over each clip (_upscale); on by
-    # default (proxy_upscale), null turns it off.
+    # default (proxy_upscale), null turns it off; "window": {"length" (81), "overlap" (30)} samples a
+    # clip longer than 81 frames in overlapping context windows; "video": "fun_control" (default) or
+    # "vace" (Wan 2.2 VACE-Fun, workflows.PROXY_VIDEO); "handoff": {"start_step" (14)}, the last steps
+    # by plain Wan 2.2 I2V's low-noise expert (workflows.with_handoff).
     # With H3 and no "lora" given, the 360 orbit LoRA is used, with the prompt it was trained on
     # in place of giro's stock prompt (docs/FINDINGS.md, "Orbit videos").
     tuned = {"lora": "h3/minimax_h3_flf2v_orbit360_pablodawson_v1.safetensors"}
@@ -107,7 +110,7 @@ class OrbitVideo(Stage):
     path_defaults = {"path": "spiral", "turns": 2.0, "pitch_end": 45.0}
     # The proxy orbit upscales its frames twice with SeedVR2 unless "upscale" is given (null: off).
     proxy_upscale = {"scale": 2.0}
-    extra_params = ("lora", "lora_strength", "lora_low", "model", "clips", "refine", "init", "upscale", *path_defaults)
+    extra_params = ("lora", "lora_strength", "lora_low", "model", "clips", "refine", "init", "upscale", "window", "video", "handoff", *path_defaults)
 
     def inputs_for(self, params: dict[str, Any]) -> tuple[str, ...]:
         if params.get("model") == "wan22-control":
@@ -192,7 +195,20 @@ class OrbitVideo(Stage):
                             image=hero, start=start, prompt=wf_k["prompt"], seed=params["seed"], proxy=wf_k["proxy"],
                             cameras=wf_k["cameras"], length=len(clip), output_prefix=wf_k["output_prefix"])
                     else:
-                        prompt = workflows.build_orbit(model, **wf_k)
+                        prompt = workflows.build_orbit(model, video=params.get("video", "fun_control"), **wf_k)
+                        if cameras and params.get("handoff"):
+                            workflows.with_handoff(prompt, int(params["handoff"].get("start_step", 14)), params["steps"])
+                    if cameras and params.get("window") and not params.get("init"):
+                        # Clips longer than Wan's 81 frames: ComfyUI's context windows, both experts
+                        win = params["window"]
+                        for node, src in (("window", "shift"), ("window_low", "shift_low")):
+                            prompt[node] = {"class_type": "WanContextWindowsManual", "inputs": {
+                                "model": [src, 0], "context_length": int(win.get("length", 81)),
+                                "context_overlap": int(win.get("overlap", 30)), "context_schedule": "standard_uniform",
+                                "context_stride": 1, "closed_loop": False, "fuse_method": "pyramid", "freenoise": True,
+                                "retain_first_frame": False, "split_conds_to_windows": False}}
+                        prompt["sample"]["inputs"]["model"] = ["window", 0]
+                        prompt["sample_low"]["inputs"]["model"] = ["window_low", 0]
                     if cameras and k == 0 and opts_path(params) == "loop":
                         # The loop comes back to the hero's camera: the hero is its last frame too.
                         prompt["condition"]["inputs"]["end_image"] = ["hero", 0]

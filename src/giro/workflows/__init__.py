@@ -111,6 +111,21 @@ _PARAMS: dict[str, dict[str, tuple[str, str]]] = {
         "seed": ("sample", "seed"),
         "output_prefix": ("save", "filename_prefix"),
     },
+    # The same with Wan 2.2 VACE-Fun 14B: the hero kept as frame 0 by VACE's masks, the proxy's
+    # depth as the control for the rest, the hero also as VACE's reference image.
+    "orbit_video_wan22_vace": {
+        "image": ("hero", "image"),
+        "prompt": ("positive", "text"),
+        "width": ("condition", "width"),
+        "height": ("condition", "height"),
+        "length": ("condition", "length"),
+        "seed": ("sample", "noise_seed"),
+        "output_prefix": ("frames", "filename_prefix"),
+        "proxy": ("proxy", "path"),
+        "cameras": ("depth", "cameras"),
+        "silhouette_paths": ("silhouettes", "paths"),
+        "depth_prefix": ("depth_frames", "filename_prefix"),
+    },
     "edit_image": {
         "image": ("image", "image"),
         "prompt": ("positive", "prompt"),
@@ -151,15 +166,18 @@ def with_lora(prompt: dict[str, Any], lora: str, strength: float = 1.0, loader: 
 
 
 ORBIT_MODELS = {"h3": "orbit_video", "wan22": "orbit_video_wan22", "wan22-control": "orbit_video_wan22_control"}
+# The proxy orbit's video model variants (orbit_video "video"): Fun Control (default) or VACE-Fun.
+PROXY_VIDEO = {"fun_control": "orbit_video_wan22_control", "vace": "orbit_video_wan22_vace"}
 
 
-def build_orbit(model: str = "h3", steps: int | None = None, **params: Any) -> dict[str, Any]:
-    """The orbit workflow of a video model ("h3", "wan22" or "wan22-control") with `params` applied."""
+def build_orbit(model: str = "h3", steps: int | None = None, video: str = "fun_control", **params: Any) -> dict[str, Any]:
+    """The orbit workflow of a video model ("h3", "wan22" or "wan22-control"; for the last, `video`
+    picks PROXY_VIDEO's variant) with `params` applied."""
     if model not in ORBIT_MODELS:
         raise KeyError(f"no orbit workflow for model {model!r} (have {', '.join(ORBIT_MODELS)})")
     if model == "h3":
         return build("orbit_video", steps=steps, **params)
-    prompt = build(ORBIT_MODELS[model], **params)
+    prompt = build(PROXY_VIDEO[video] if model == "wan22-control" else ORBIT_MODELS[model], **params)
     if model == "wan22-control":  # the control video is rendered at the video's size
         for key in ("width", "height"):
             if params.get(key):
@@ -197,6 +215,26 @@ def build_refine(width: int, height: int, sigma: float, steps: int, from_proxy: 
         prompt[node]["inputs"]["width"] = width
         prompt[node]["inputs"]["height"] = height
     return prompt
+
+
+def with_handoff(prompt: dict[str, Any], start_step: int, steps: int) -> dict[str, Any]:
+    """Hand a Fun Control prompt's last steps (from `start_step` of `steps`) to plain Wan 2.2 I2V's
+    low-noise expert, conditioned on the same first frame, for its photographic finish."""
+    p = prompt
+    p["sample_low"]["inputs"] |= {"end_at_step": start_step, "return_with_leftover_noise": "enable"}
+    p["unet_i2v"] = {"class_type": "UNETLoader", "inputs": {"unet_name": "wan22/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+                                                            "weight_dtype": "default"}}
+    p["shift_i2v"] = {"class_type": "ModelSamplingSD3", "inputs": {"model": ["unet_i2v", 0], "shift": 8.0}}
+    c = p["condition"]["inputs"]
+    p["condition_i2v"] = {"class_type": "WanImageToVideo", "inputs": {
+        "positive": ["positive", 0], "negative": ["negative", 0], "vae": ["vae", 0], "width": c["width"],
+        "height": c["height"], "length": c["length"], "batch_size": 1, "start_image": c["start_image"]}}
+    p["sample_i2v"] = {"class_type": "KSamplerAdvanced", "inputs": p["sample_low"]["inputs"] | {
+        "model": ["shift_i2v", 0], "add_noise": "disable", "positive": ["condition_i2v", 0],
+        "negative": ["condition_i2v", 1], "latent_image": ["sample_low", 0], "start_at_step": start_step,
+        "end_at_step": 10000, "return_with_leftover_noise": "disable", "steps": steps}}
+    p["decode"]["inputs"]["samples"] = ["sample_i2v", 0]
+    return p
 
 
 def build_arc(first: str, last: str, **params: Any) -> dict[str, Any]:

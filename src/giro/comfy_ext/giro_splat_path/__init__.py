@@ -188,6 +188,28 @@ class GiroMeshToSplat:
         return (splat,)
 
 
+class GiroVaceControl:
+    """VACE's control video for a proxy orbit: the start image as frame 0, kept as it is (mask 0),
+    and the proxy's depth for the other frames, generated under that control (mask 1)."""
+
+    CATEGORY = "giro"
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("control_video", "control_masks")
+    FUNCTION = "build"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"depth": ("IMAGE",), "start": ("IMAGE",)}}
+
+    def build(self, depth, start):
+        n, h, w, _ = depth.shape
+        first = comfy.utils.common_upscale(start[:1].movedim(-1, 1), w, h, "bilinear", "center").movedim(1, -1)[..., :3]
+        video = torch.cat([first.to(depth), depth[1:, ..., :3]], 0)
+        masks = torch.ones((n, h, w))
+        masks[0] = 0.0
+        return (video, masks)
+
+
 class GiroSaveSplat:
     """Write a splat to a PLY file at an absolute path inside giro's data roots."""
 
@@ -313,6 +335,7 @@ NODE_CLASS_MAPPINGS = {
     "GiroSaveSplat": GiroSaveSplat,
     "GiroLoadSplat": GiroLoadSplat,
     "GiroMeshToSplat": GiroMeshToSplat,
+    "GiroVaceControl": GiroVaceControl,
     "GiroWanFunControlToVideo": GiroWanFunControlToVideo,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -320,6 +343,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GiroRenderSplatCameras": "giro: render splat from cameras",
     "GiroSaveSplat": "giro: save splat (path)",
     "GiroMeshToSplat": "giro: mesh surface as a splat",
+    "GiroVaceControl": "giro: VACE control from a start frame and depth",
     "GiroLoadSplat": "giro: load splat (path)",
     "GiroWanFunControlToVideo": "giro: Wan 2.2 Fun Control with a first frame",
 }

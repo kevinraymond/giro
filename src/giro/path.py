@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-PRESETS = ("ring", "spiral", "wave", "loop")
+PRESETS = ("ring", "spiral", "wave", "loop", "ringrise")
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,8 @@ def plan(start: PathCamera, preset: str, frames: int, turns: float = 1.0, pitch_
     wave: up to `pitch_end` and back down once. The last camera stops one step short of where a
     whole number of turns would close the circle (the next frame would repeat the first).
     loop: a wave whose last camera is the first one again (whole turns), so the clip can end on
-    the hero as well as start on it.
+    the hero as well as start on it. ringrise: the first turn at start's pitch (eye level gets a
+    whole turn of views), then the rest climbing to `pitch_end`.
     """
     if preset not in PRESETS:
         raise ValueError(f"unknown path preset {preset!r}; one of {', '.join(PRESETS)}")
@@ -77,6 +78,9 @@ def plan(start: PathCamera, preset: str, frames: int, turns: float = 1.0, pitch_
         t = i / (frames - 1) if preset == "loop" else i / frames
         if preset in ("wave", "loop"):
             pitch = start.pitch + (end - start.pitch) * 0.5 * (1 - math.cos(2 * math.pi * t))
+        elif preset == "ringrise":
+            flat = 1 / max(turns, 1.0)  # the first turn's share of the clip
+            pitch = start.pitch if t < flat else start.pitch + (end - start.pitch) * (t - flat) / (1 - flat)
         else:
             pitch = start.pitch + (end - start.pitch) * (i / max(1, frames - 1))
         cams.append(replace(start, yaw=start.yaw + 360.0 * turns * t, pitch=pitch))
