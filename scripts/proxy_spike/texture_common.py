@@ -247,3 +247,39 @@ def bake(src: Source, erode: int = 2) -> tuple[np.ndarray, np.ndarray]:
     m = F.grid_sample(torch.from_numpy(src.mask.astype(np.float32)).to(dev)[None, None], grid, align_corners=False)[0, 0] > 0.5
     m = ndimage.binary_erosion(m.cpu().numpy(), iterations=erode) if erode else m.cpu().numpy()
     return (rgb.permute(1, 2, 0).cpu().numpy() * m[..., None] * 255).clip(0, 255).astype(np.uint8), m
+
+
+def qwen_edit_workflow(image: str, prompt: str, seed: int = 1, prefix: str = "giro/edit", mask: str | None = None) -> dict:
+    """Qwen-Image-Edit 2511 (Apache-2.0), Lightning 4 steps, on one uploaded image. With `mask` (an
+    uploaded image, white = repaint) the sampling is masked: only those pixels change, so the edit
+    cannot move the camera (unmasked, it turns unusual views, a tank from below, into usual ones)."""
+    wf = {
+        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_edit_2511_int8_convrot.safetensors", "weight_dtype": "default"}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
+        "vae": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
+        "shift": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["unet", 0], "shift": 3.1}},
+        "cfgnorm": {"class_type": "CFGNorm", "inputs": {"model": ["shift", 0], "strength": 1.0}},
+        "lightning": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["cfgnorm", 0], "strength_model": 1.0,
+                      "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"}},
+        "image": {"class_type": "LoadImage", "inputs": {"image": image, "upload": "image"}},
+        "scaled": {"class_type": "FluxKontextImageScale", "inputs": {"image": ["image", 0]}},
+        "latent": {"class_type": "VAEEncode", "inputs": {"pixels": ["scaled", 0], "vae": ["vae", 0]}},
+        "pos": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["scaled", 0], "prompt": prompt}},
+        "posr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["pos", 0], "reference_latents_method": "index_timestep_zero"}},
+        "neg": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["scaled", 0], "prompt": ""}},
+        "negr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["neg", 0], "reference_latents_method": "index_timestep_zero"}},
+        "sample": {"class_type": "KSampler", "inputs": {"model": ["lightning", 0], "positive": ["posr", 0], "negative": ["negr", 0],
+                   "latent_image": ["latent", 0], "seed": seed, "steps": 4, "cfg": 1.0, "sampler_name": "euler",
+                   "scheduler": "simple", "denoise": 1.0}},
+        "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
+        "save": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": prefix}},
+    }
+    if mask:
+        wf |= {
+            "mask_img": {"class_type": "LoadImage", "inputs": {"image": mask, "upload": "image"}},
+            "mask_scaled": {"class_type": "FluxKontextImageScale", "inputs": {"image": ["mask_img", 0]}},
+            "mask": {"class_type": "ImageToMask", "inputs": {"image": ["mask_scaled", 0], "channel": "red"}},
+            "noise_mask": {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["latent", 0], "mask": ["mask", 0]}},
+        }
+        wf["sample"]["inputs"]["latent_image"] = ["noise_mask", 0]
+    return wf

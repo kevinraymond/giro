@@ -8,11 +8,13 @@ skips what OUT already has.
   3. seed pick by edge agreement with the anchors, contact sheet to overrule it (pick_seed.py)
   4. silhouette fits, photometric registration (anchors that still disagree are dropped), warp
      grids (project_texture.py, register_photometric.py, warp_views.py)
-  5. texture with view selection, then region patches (patch_region.py), then 188 renders
+  5. texture with view selection, then region patches (patch_region.py), optionally a generative
+     fill of what no view painted (fill_unseen.py), then 188 renders
   6. training with the attempt's own settings (giro stages --from dataset), max splats 300K
 
     texture_route.py ATTEMPT OUT GPU [--seeds 6] [--angles DIR] [--seed mesh_pixal3d_N.npz]
-        [--patch "license plate::Make the license plate ...::180::10"] [--library NAME --image SOURCE]
+        [--patch "license plate::Make the license plate ...::180::10"] [--fill "desert tan M1 Abrams tank"]
+        [--library NAME --image SOURCE]
 
 A patch is FIND::PROMPT::YAW::PITCH[::PICK] (patch_region.py's arguments). OUT/route.json records
 what each step chose; OUT/work/attempt is the trained attempt.
@@ -38,6 +40,8 @@ ap.add_argument("--seed", help="this proxy mesh instead of the pick")
 ap.add_argument("--min-iou", type=float, default=0.75, help="anchors registered worse than this are left out")
 ap.add_argument("--min-ncc", type=float, default=0.6, help="anchors whose colors agree less after registration are left out")
 ap.add_argument("--patch", action="append", default=[])
+ap.add_argument("--fill", metavar="SUBJECT", help="generative fill of the surface no view painted (fill_unseen.py), "
+                "e.g. 'desert tan M1 Abrams tank'")
 ap.add_argument("--max-splats", type=int, default=300_000)
 ap.add_argument("--library", help="also make a library job with this name")
 ap.add_argument("--image", type=Path, help="the job's source image, for the library (default: the hero)")
@@ -121,11 +125,18 @@ for k, spec in enumerate(args.patch, 1):
     run("patch_region.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--find", find,
         "--prompt", prompt, "--yaw", yaw, "--pitch", pitch, *(["--pick", pick[0]] if pick else []))
     tex = nxt
-if args.patch:
+if args.fill:  # renders of the textured mesh are needed for the fill's cameras
+    if not (work / "attempt" / "cameras.json").exists():
+        run("project_texture.py", str(attempt), str(angles), str(work), g, "--texture", str(tex), "--out", "attempt")
+    nxt = work / "texture-fill.pt"
+    run("fill_unseen.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--subject", args.fill)
+    tex = nxt
+if args.patch or args.fill:
     comfy_down()
 run("project_texture.py", str(attempt), str(angles), str(work), g, "--texture", str(tex), "--out", "attempt")
 route["texture"] = json.loads((work / "texture.json").read_text()).get("painted")
 route["patches"] = args.patch
+route["fill"] = args.fill
 save()
 
 print("6. training", flush=True)

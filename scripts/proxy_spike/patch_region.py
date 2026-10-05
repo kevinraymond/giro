@@ -29,7 +29,7 @@ from giro import path as campath
 from giro.comfy import server
 from giro.comfy.client import ComfyClient, Done
 from giro.stages.masks import Masks, sam_workflow
-from texture_common import fingerprint, project, render_points, sample, samples, zbuffer
+from texture_common import fingerprint, project, qwen_edit_workflow, render_points, sample, samples, zbuffer
 
 ap = argparse.ArgumentParser()
 ap.add_argument("attempt", type=Path)
@@ -85,30 +85,6 @@ async def find(comfy: ComfyClient, path: Path) -> np.ndarray:
     return lab == keep
 
 
-def edit_workflow(image: str) -> dict:
-    return {
-        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_edit_2511_int8_convrot.safetensors", "weight_dtype": "default"}},
-        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
-        "vae": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
-        "shift": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["unet", 0], "shift": 3.1}},
-        "cfgnorm": {"class_type": "CFGNorm", "inputs": {"model": ["shift", 0], "strength": 1.0}},
-        "lightning": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["cfgnorm", 0], "strength_model": 1.0,
-                      "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"}},
-        "image": {"class_type": "LoadImage", "inputs": {"image": image, "upload": "image"}},
-        "scaled": {"class_type": "FluxKontextImageScale", "inputs": {"image": ["image", 0]}},
-        "latent": {"class_type": "VAEEncode", "inputs": {"pixels": ["scaled", 0], "vae": ["vae", 0]}},
-        "pos": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["scaled", 0], "prompt": args.prompt}},
-        "posr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["pos", 0], "reference_latents_method": "index_timestep_zero"}},
-        "neg": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["scaled", 0], "prompt": ""}},
-        "negr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["neg", 0], "reference_latents_method": "index_timestep_zero"}},
-        "sample": {"class_type": "KSampler", "inputs": {"model": ["lightning", 0], "positive": ["posr", 0], "negative": ["negr", 0],
-                   "latent_image": ["latent", 0], "seed": args.seed, "steps": 4, "cfg": 1.0, "sampler_name": "euler",
-                   "scheduler": "simple", "denoise": 1.0}},
-        "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
-        "save": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": "giro/patch"}},
-    }
-
-
 def surface_point(cam: campath.PathCamera, mask: np.ndarray) -> tuple[np.ndarray, float]:
     """The region's 3D center (the samples landing in it, nearest layer) and its height in the world."""
     u, v, z = project(cam, S, S, xyz)
@@ -142,7 +118,7 @@ async def main() -> None:
                 # 2. Edit the close render.
                 image = await comfy.upload_image(close_path)
                 done = None
-                async for ev in comfy.run(edit_workflow(image)):
+                async for ev in comfy.run(qwen_edit_workflow(image, args.prompt, args.seed)):
                     if isinstance(ev, Done):
                         done = ev
                 assert done is not None
