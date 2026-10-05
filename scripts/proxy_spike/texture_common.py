@@ -139,3 +139,33 @@ class Source:
         cos = (nrm * to_cam).sum(1).abs() / to_cam.norm(dim=1)
         wt = torch.where(visible, self.boost * cos**4 * fe, torch.zeros_like(cos))
         return sample(self.rgb, u, vv, self.w, self.h), wt
+
+
+def smooth_field(xyz: torch.Tensor, values: torch.Tensor, weights: torch.Tensor, voxel: float, sigma_vox: float
+                 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """The weighted average of `values` (N, C) around each sample: binned into a voxel grid,
+    blurred with a Gaussian of sigma_vox voxels (normalized convolution, so empty voxels borrow
+    from their neighbors), read back per sample. Also returns the blurred weight (confidence)."""
+    lo = xyz.min(0).values - 4 * voxel
+    dims = (((xyz.max(0).values + 4 * voxel) - lo) / voxel).ceil().long() + 1
+    ijk = ((xyz - lo) / voxel).round().long()
+    flat = (ijk[:, 0] * dims[1] + ijk[:, 1]) * dims[2] + ijk[:, 2]
+    n_cells, c = int(dims.prod()), values.shape[1]
+    num = torch.zeros(n_cells, c, device=xyz.device).index_add_(0, flat, values * weights[:, None])
+    den = torch.zeros(n_cells, device=xyz.device).index_add_(0, flat, weights)
+    grid = torch.cat([num.T, den[None]]).reshape(1, c + 1, *dims.tolist())
+    r = max(1, math.ceil(2.5 * sigma_vox))
+    k = torch.exp(-0.5 * (torch.arange(-r, r + 1, device=xyz.device, dtype=torch.float32) / sigma_vox) ** 2)
+    k = k / k.sum()
+    for axis in range(3):
+        shape = [1, 1, 1, 1, 1]
+        shape[2 + axis] = 2 * r + 1
+        pad = [0, 0, 0]
+        pad[axis] = r
+        grid = F.conv3d(grid.reshape(c + 1, 1, *grid.shape[2:]), k.reshape(shape), padding=tuple(pad)).reshape(1, c + 1, *grid.shape[2:])
+    # Read back trilinearly (nearest-voxel reads show the grid as blocks on the surface).
+    pos = (xyz - lo) / voxel / (dims - 1).float() * 2 - 1  # voxel centers at the grid's corners
+    grid_xyz = pos[:, [2, 1, 0]].reshape(1, -1, 1, 1, 3)  # grid_sample wants (x, y, z) = (dim 4, 3, 2)
+    out = F.grid_sample(grid, grid_xyz, mode="bilinear", align_corners=True).reshape(c + 1, -1)
+    den_b = out[c]
+    return (out[:c].T / den_b.clamp_min(1e-9)[:, None]), den_b

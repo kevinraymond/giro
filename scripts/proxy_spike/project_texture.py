@@ -2,9 +2,8 @@
 photogrammetry textures its mesh from the photos, then render a dense multi-ring orbit of it and
 lay that out as an attempt the stages can train (dataset -> export). No video model.
 
-    project_texture.py ATTEMPT ANCHOR_DIR WORK GPU [SKIP=02,05] [N_POINTS=6000000] [PAINT_TOL=0.012] [CAMERAS]
-
-CAMERAS: register_features.py's anchor cameras, used instead of the silhouette refinement.
+    project_texture.py ATTEMPT ANCHOR_DIR WORK GPU [--cameras WORK/anchor_cameras.json]
+        [--select-power 6] [--level-voxel 0.1,0.03] [--out attempt]   (--help for all)
 
 WORK holds proxy_mesh.py's output (mesh.npz, candidates/proxy_<seed>.ply). Steps:
 
@@ -25,11 +24,11 @@ WORK holds proxy_mesh.py's output (mesh.npz, candidates/proxy_<seed>.ply). Steps
 Writes WORK/sources.jpg (each source with its refined fit outlined), WORK/coverage.jpg (renders
 colored by which source painted them), WORK/texture.json (fits, gains, coverage).
 """
+import argparse
 import json
 import math
 import shutil
 import subprocess
-import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -42,14 +41,30 @@ from scipy import ndimage, optimize
 from giro import path as campath
 from giro.stages.fallback import _qvec
 from giro.stages.proxy import Points, fit_hero_camera, iou
-from texture_common import Source, anchor_mask, load_cameras, project, samples, zbuffer
+from texture_common import Source, anchor_mask, load_cameras, project, samples, smooth_field, zbuffer
 
-attempt, adir, work = (Path(a).resolve() for a in sys.argv[1:4])
-gpu = int(sys.argv[4])
-skip = set(sys.argv[5].split(",")) if len(sys.argv) > 5 else {"02", "05"}
-n_points = int(sys.argv[6]) if len(sys.argv) > 6 else 6_000_000
-cameras_file = Path(sys.argv[8]).resolve() if len(sys.argv) > 8 else None  # register_features.py's anchor cameras
-dev = torch.device(f"cuda:{gpu}")
+ap = argparse.ArgumentParser()
+ap.add_argument("attempt", type=Path)
+ap.add_argument("anchor_dir", type=Path)
+ap.add_argument("work", type=Path)
+ap.add_argument("gpu", type=int)
+ap.add_argument("--skip", default="02,05", help="anchors left out")
+ap.add_argument("--points", type=int, default=6_000_000, help="surface samples")
+ap.add_argument("--paint-tol", type=float, default=0.012, help="depth tolerance for painting, proxy units")
+ap.add_argument("--cameras", type=Path, help="register_photometric.py's anchor cameras (else silhouette fits)")
+ap.add_argument("--select-power", type=float, default=0.0,
+                help="view selection: weights times their local average (1 cm voxels, sigma 2) to this power, "
+                     "so each region takes its regionally best view (0: off)")
+ap.add_argument("--level-voxel", default="",
+                help="seam leveling: each anchor's low frequencies (voxels this size, sigma 1.5) pulled to the "
+                     "other views' blend, coarse to fine for a list (0.1,0.03); the hero is kept (empty: off)")
+ap.add_argument("--out", default="attempt", help="attempt directory name under WORK")
+args = ap.parse_args()
+attempt, adir, work = args.attempt.resolve(), args.anchor_dir.resolve(), args.work.resolve()
+skip = set(args.skip.split(","))
+n_points = args.points
+cameras_file = args.cameras.resolve() if args.cameras else None
+dev = torch.device(f"cuda:{args.gpu}")
 FRAME_SIZE = (768, 1024)
 RINGS = [(-20, 24), (0, 48), (20, 48), (40, 36), (60, 24), (80, 8)]  # (pitch, views); + looks down
 FIT_REFINE_HEIGHT = 512
@@ -111,7 +126,7 @@ report["fits"] = {n: {"camera": c.to_json(), "iou": round(float(iou(points.silho
 # Depth tolerances, proxy units (~1 tall): samples this close behind the nearest depth around
 # their pixel count as the same surface. Painting is looser (a source pixel spans more depth on a
 # slanted surface); rendering tighter (keeps the far side out of the frames).
-PAINT_TOL = float(sys.argv[7]) if len(sys.argv) > 7 else 0.012
+PAINT_TOL = args.paint_tol
 RENDER_TOL = 0.005
 cols, weights = [], []
 for name, img, mask, cam, boost in sources:
@@ -150,6 +165,28 @@ for i, (name, *_rest) in enumerate(sources):
     both = (weights[i] > 0.1) & (others > 0.1)
     report["disagreement"][name] = round(float((cols[i][both] - blend[both]).abs().mean()), 4) if both.sum() > 2000 else None
 print("disagreement:", report["disagreement"], flush=True)
+
+# Seam leveling (cf. Waechter et al., ECCV 2014): each anchor's colors corrected by the smooth
+# difference to the other views' blend where both see the surface; detail stays, lighting evens out.
+for level_voxel in [float(x) for x in args.level_voxel.split(",") if x]:
+    for i in range(1, len(sources)):
+        others = [j for j in range(len(sources)) if j != i]
+        w2 = torch.stack([weights[j] ** 2 for j in others])
+        blend = (w2[:, :, None] * torch.stack([cols[j] for j in others])).sum(0) / w2.sum(0).clamp_min(1e-12)[:, None]
+        ow = torch.stack([weights[j] for j in others]).sum(0)
+        both = torch.minimum(weights[i], ow) * ((weights[i] > 0.05) & (ow > 0.05))
+        offset, conf = smooth_field(xyz, blend - cols[i], both, level_voxel, 1.5)
+        seen = weights[i] > 0
+        cols[i] = torch.where((seen & (conf > 1e-6))[:, None], (cols[i] + offset).clamp(0, 1), cols[i])
+        report.setdefault("leveling", {}).setdefault(str(level_voxel), {})[sources[i][0]] = round(float(offset[seen].abs().mean()), 4)
+    print(f"leveling at {level_voxel}, mean offset:", report["leveling"][str(level_voxel)], flush=True)
+
+# View selection: each region takes its regionally best view (soft, so seams stay feathered).
+if args.select_power:
+    local = torch.stack([smooth_field(xyz, wt[:, None], torch.ones_like(wt), 0.01, 2.0)[0][:, 0].clamp_min(0)
+                         for wt in weights])
+    rel = local / local.max(0).values.clamp_min(1e-9)  # 1 for the regionally best view
+    weights = [wt * rel[i] ** args.select_power for i, wt in enumerate(weights)]
 
 W = torch.stack(weights) ** 2
 total = W.sum(0)
@@ -201,7 +238,7 @@ def render_view(cam: campath.PathCamera, w: int, h: int, values: torch.Tensor) -
     return img.cpu().numpy(), mask
 
 
-out = work / "attempt"
+out = work / args.out
 if out.exists():
     shutil.rmtree(out)
 for d in ("frames", "masks/frames", "masks/hero", "hero", "poses/colmap/model_txt", "poses/colmap/model", ".stages"):
