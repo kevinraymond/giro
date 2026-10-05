@@ -184,3 +184,25 @@ def smooth_field(xyz: torch.Tensor, values: torch.Tensor, weights: torch.Tensor,
     out = F.grid_sample(grid, grid_xyz, mode="bilinear", align_corners=True).reshape(c + 1, -1)
     den_b = out[c]
     return (out[:c].T / den_b.clamp_min(1e-9)[:, None]), den_b
+
+
+def render_points(xyz: torch.Tensor, values: torch.Tensor, cam: Any, w: int, h: int, tol: float = 0.005
+                  ) -> tuple[np.ndarray, np.ndarray]:
+    """The samples' `values` seen from `cam`: the nearest layer per pixel (within `tol`) averaged,
+    pinholes closed from the neighbors; returns the image (h, w, C) and the subject's mask."""
+    dev = xyz.device
+    u, vv, z = project(cam, w, h, xyz)
+    ok, pix, zmin, _ = zbuffer(u, vv, z, w, h)
+    front = ok & (z <= zmin + tol)
+    acc = torch.zeros((w * h, values.shape[1]), device=dev).index_add_(0, pix[front], values[front].float())
+    n = torch.zeros(w * h, device=dev).index_add_(0, pix[front], torch.ones_like(z[front]))
+    img = (acc / n.clamp_min(1)[:, None]).reshape(h, w, -1)
+    filled = (n > 0).reshape(h, w)
+    for _ in range(4):  # the 3x3 depth test also drops a pixel or two beside nearer edges
+        k = torch.ones((1, 1, 3, 3), device=dev)
+        num = F.conv2d((img * filled[..., None]).permute(2, 0, 1)[:, None], k, padding=1)[:, 0].permute(1, 2, 0)
+        den = F.conv2d(filled[None, None].float(), k, padding=1)[0, 0]
+        img = torch.where(filled[..., None], img, num / den.clamp_min(1)[..., None])
+        filled = filled | (den > 0)
+    mask = ndimage.binary_opening(ndimage.binary_closing(filled.cpu().numpy(), iterations=2), iterations=1)
+    return img.cpu().numpy(), mask

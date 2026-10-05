@@ -34,14 +34,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image, ImageDraw
 from scipy import ndimage, optimize
 
 from giro import path as campath
 from giro.stages.fallback import _qvec
 from giro.stages.proxy import Points, fit_hero_camera, iou
-from texture_common import Source, anchor_mask, load_cameras, project, samples, smooth_field, zbuffer
+from texture_common import Source, anchor_mask, load_cameras, render_points, samples, smooth_field
 
 ap = argparse.ArgumentParser()
 ap.add_argument("attempt", type=Path)
@@ -62,6 +61,8 @@ ap.add_argument("--level-voxel", default="",
 ap.add_argument("--views", type=Path, help="paint from this attempt's frames (frames/, masks/frames/, "
                 "cameras.json; e.g. enhanced renders) instead of the anchors; the hero stays")
 ap.add_argument("--views-every", type=int, default=2, help="with --views, every Nth frame")
+ap.add_argument("--save-texture", type=Path, help="write the painted samples' colors here (patch_region.py reads them)")
+ap.add_argument("--texture", type=Path, help="render this saved texture (patch_region.py's output) instead of painting")
 ap.add_argument("--out", default="attempt", help="attempt directory name under WORK")
 args = ap.parse_args()
 attempt, adir, work = args.attempt.resolve(), args.anchor_dir.resolve(), args.work.resolve()
@@ -109,7 +110,7 @@ hero_cam, fit = fit_hero_camera(points, hero_img, hero_mask, fov)
 hero_cam, hero_iou = refine(hero_cam, hero_mask)
 print(f"hero: yaw {hero_cam.yaw:.1f} pitch {hero_cam.pitch:.1f} IoU {hero_iou:.3f}", flush=True)
 sources = [("hero", hero_img, hero_mask, hero_cam, HERO_WEIGHT)]
-reg = {} if args.views else json.loads((adir / "registration.json").read_text())
+reg = {} if args.views or args.texture else json.loads((adir / "registration.json").read_text())
 solved = load_cameras(cameras_file) if cameras_file else {}
 if args.views:
     vdir = args.views.resolve()
@@ -149,7 +150,7 @@ for name, img, mask, cam, boost in sources:
     if not args.views:
         print(f"{name}: paints {(wt > 0).float().mean():.1%} of the surface", flush=True)
 
-if not args.views:  # anchors only: rendered views already agree in exposure, and n^2 is slow for ~100
+if not (args.views or args.texture):  # anchors only: rendered views already agree in exposure, and n^2 is slow for ~100
     # Exposure: each anchor matched to the hero (or to the blend of the views already matched).
     gains = {}
     order = sorted(range(1, len(sources)), key=lambda i: -float(((weights[i] > 0.1) & (weights[0] > 0.1)).sum()))
@@ -216,6 +217,14 @@ for i, (wt, c) in enumerate(zip(weights, cols)):  # one view at a time: ~100 vie
 painted = total > 1e-8
 rgb = torch.where(painted[:, None], acc / total.clamp_min(1e-12)[:, None], base_rgb)
 winner = torch.where(painted, winner, -1)
+if args.texture:
+    saved = torch.load(args.texture)
+    assert saved["points"] == n_points, f"{args.texture} was painted on {saved['points']} samples, not {n_points}"
+    rgb, winner = saved["rgb"].to(dev).float(), saved["winner"].to(dev)
+    painted = winner >= 0
+    winner = torch.where(painted, 0, -1)  # the coverage sheet shows painted vs not (the sources are gone)
+if args.save_texture:
+    torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": n_points}, args.save_texture)
 report["painted"] = round(float(painted.float().mean()), 4)
 print(f"painted {painted.float().mean():.1%} of the surface; the rest keeps the mesh's colors", flush=True)
 del acc, best
@@ -243,22 +252,7 @@ sheet.save(work / "sources.jpg", quality=88)
 
 # 4. Render the orbit and lay out the attempt.
 def render_view(cam: campath.PathCamera, w: int, h: int, values: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-    u, vv, z = project(cam, w, h, xyz)
-    ok, pix, zmin, _ = zbuffer(u, vv, z, w, h)
-    front = ok & (z <= zmin + RENDER_TOL)
-    acc = torch.zeros((w * h, values.shape[1]), device=dev).index_add_(0, pix[front], values[front])
-    n = torch.zeros(w * h, device=dev).index_add_(0, pix[front], torch.ones_like(z[front]))
-    img = (acc / n.clamp_min(1)[:, None]).reshape(h, w, -1)
-    filled = (n > 0).reshape(h, w)
-    # close pinholes between samples from the neighbors
-    for _ in range(4):  # the 3x3 depth test also drops a pixel or two beside nearer edges
-        k = torch.ones((1, 1, 3, 3), device=dev)
-        num = F.conv2d((img * filled[..., None]).permute(2, 0, 1)[:, None], k, padding=1)[:, 0].permute(1, 2, 0)
-        den = F.conv2d(filled[None, None].float(), k, padding=1)[0, 0]
-        img = torch.where(filled[..., None], img, num / den.clamp_min(1)[..., None])
-        filled = filled | (den > 0)
-    mask = ndimage.binary_opening(ndimage.binary_closing(filled.cpu().numpy(), iterations=2), iterations=1)
-    return img.cpu().numpy(), mask
+    return render_points(xyz, values, cam, w, h, RENDER_TOL)
 
 
 out = work / args.out
