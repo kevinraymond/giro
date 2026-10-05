@@ -9,13 +9,15 @@ skips what OUT already has.
   4. silhouette fits, photometric registration (anchors that still disagree are dropped), warp
      grids (project_texture.py, register_photometric.py, warp_views.py)
   5. texture with view selection, then region patches (patch_region.py), optionally a generative
-     fill of what no view painted (fill_unseen.py), then 188 renders (2x supersampled, soft masks)
+     fill of what no view painted (fill_unseen.py), then progressive painting (progressive_paint.py:
+     8 guarded whole-image key views, then masked views; --no-progressive skips it, ~25 min), then 188
+     renders (2x supersampled, soft masks)
   6. training with the attempt's own settings (giro stages --from dataset), max splats 300K, masks not
      eroded
 
     texture_route.py ATTEMPT OUT GPU [--seeds 6] [--angles DIR] [--seed mesh_pixal3d_N.npz]
-        [--patch "license plate::Make the license plate ...::180::10"] [--fill "desert tan M1 Abrams tank"]
-        [--library NAME --image SOURCE]
+        [--patch "license plate::Make the license plate ...::180::10"] [--fill] [--no-progressive]
+        [--subject "desert tan M1 Abrams tank"] [--library NAME --image SOURCE]
 
 A patch is FIND::PROMPT::YAW::PITCH[::PICK] (patch_region.py's arguments). OUT/route.json records
 what each step chose; OUT/work/attempt is the trained attempt.
@@ -41,12 +43,17 @@ ap.add_argument("--seed", help="this proxy mesh instead of the pick")
 ap.add_argument("--min-iou", type=float, default=0.75, help="anchors registered worse than this are left out")
 ap.add_argument("--min-ncc", type=float, default=0.6, help="anchors whose colors agree less after registration are left out")
 ap.add_argument("--patch", action="append", default=[])
-ap.add_argument("--fill", metavar="SUBJECT", help="generative fill of the surface no view painted (fill_unseen.py), "
+ap.add_argument("--subject", default="object", help="what the hero shows, for the edit prompts (fill, progressive), "
                 "e.g. 'desert tan M1 Abrams tank'")
+ap.add_argument("--fill", nargs="?", const="", metavar="SUBJECT",
+                help="generative fill of the surface no view painted (fill_unseen.py); SUBJECT, if given, sets --subject")
+ap.add_argument("--no-progressive", action="store_true", help="skip progressive painting (progressive_paint.py)")
 ap.add_argument("--max-splats", type=int, default=300_000)
 ap.add_argument("--library", help="also make a library job with this name")
 ap.add_argument("--image", type=Path, help="the job's source image, for the library (default: the hero)")
 args = ap.parse_args()
+if args.fill:
+    args.subject = args.fill
 attempt, out = args.attempt.resolve(), args.out.resolve()
 out.mkdir(parents=True, exist_ok=True)
 work, seeds_dir = out / "work", out / "seeds"
@@ -126,18 +133,25 @@ for k, spec in enumerate(args.patch, 1):
     run("patch_region.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--find", find,
         "--prompt", prompt, "--yaw", yaw, "--pitch", pitch, *(["--pick", pick[0]] if pick else []))
     tex = nxt
-if args.fill:  # renders of the textured mesh are needed for the fill's cameras
-    if not (work / "attempt" / "cameras.json").exists():
-        run("project_texture.py", str(attempt), str(angles), str(work), g, "--texture", str(tex), "--out", "attempt")
+fill = args.fill is not None
+if (fill or not args.no_progressive) and not (work / "attempt" / "cameras.json").exists():
+    # the fill and progressive painting take their cameras from the textured mesh's renders
+    run("project_texture.py", str(attempt), str(angles), str(work), g, "--texture", str(tex), "--out", "attempt")
+if fill:
     nxt = work / "texture-fill.pt"
-    run("fill_unseen.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--subject", args.fill)
+    run("fill_unseen.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--subject", args.subject)
     tex = nxt
-if args.patch or args.fill:
+if not args.no_progressive:
+    nxt = work / "texture-prog.pt"
+    run("progressive_paint.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--subject", args.subject)
+    tex = nxt
+if args.patch or fill or not args.no_progressive:
     comfy_down()
 run("project_texture.py", str(attempt), str(angles), str(work), g, "--texture", str(tex), "--out", "attempt")
 route["texture"] = json.loads((work / "texture.json").read_text()).get("painted")
 route["patches"] = args.patch
-route["fill"] = args.fill
+route["fill"] = args.subject if fill else None
+route["progressive"] = not args.no_progressive
 save()
 
 print("6. training", flush=True)
