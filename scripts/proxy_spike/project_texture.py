@@ -185,7 +185,9 @@ for i in order:
         gains[i] = None
         continue
     a, b = cols[i][both], ref_c[both]
-    gain = ((a - a.mean(0)) * (b - b.mean(0))).mean(0) / a.var(0).clamp_min(1e-6)
+    # Spreads matched, not a least-squares fit: views a degree or two apart barely correlate per
+    # sample, and a regression slope then shrinks toward 0 (washed out, shadows lifted).
+    gain = b.std(0) / a.std(0).clamp_min(1e-6)
     gain = gain.clamp(0.7, 1.4)
     offset = b.mean(0) - gain * a.mean(0)
     cols[i] = (cols[i] * gain + offset).clamp(0, 1)
