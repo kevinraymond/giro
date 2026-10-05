@@ -61,9 +61,10 @@ def start(gpu: int, timeout: float = 120.0) -> str:
             "--extra-model-paths-config", str(MODEL_PATHS),
             "--preview-method", "latent2rgb", "--preview-size", "1024",
             "--disable-auto-launch",
-            # SageAttention kernels (scripts/comfy-lock.txt): Wan 1.5x and H3 1.3x faster, quality within
-            # seed noise (docs/FINDINGS.md, "Proxy orbit"); GIRO_COMFY_SAGE=0 turns them off
-            *([] if os.environ.get("GIRO_COMFY_SAGE") == "0" else ["--use-sage-attention"]),
+            # GIRO_COMFY_SAGE=1: SageAttention kernels (scripts/comfy-lock.txt). Wan 1.5x and H3 1.3x
+            # faster with quality within seed noise, but Qwen-Image-Edit (the edit stage) then returns
+            # black images, and the flag is global to the ComfyUI instance, so it stays opt-in.
+            *(["--use-sage-attention"] if os.environ.get("GIRO_COMFY_SAGE") == "1" else []),
         ],
         cwd=COMFY_DIR, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
     )
