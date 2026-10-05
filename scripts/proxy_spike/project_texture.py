@@ -2,7 +2,9 @@
 photogrammetry textures its mesh from the photos, then render a dense multi-ring orbit of it and
 lay that out as an attempt the stages can train (dataset -> export). No video model.
 
-    project_texture.py ATTEMPT ANCHOR_DIR WORK GPU [SKIP=02,05] [N_POINTS=6000000] [PAINT_TOL=0.012]
+    project_texture.py ATTEMPT ANCHOR_DIR WORK GPU [SKIP=02,05] [N_POINTS=6000000] [PAINT_TOL=0.012] [CAMERAS]
+
+CAMERAS: register_features.py's anchor cameras, used instead of the silhouette refinement.
 
 WORK holds proxy_mesh.py's output (mesh.npz, candidates/proxy_<seed>.ply). Steps:
 
@@ -39,13 +41,14 @@ from scipy import ndimage, optimize
 
 from giro import path as campath
 from giro.stages.fallback import _qvec
-from giro.stages.masks import Masks, combine
 from giro.stages.proxy import Points, fit_hero_camera, iou
+from texture_common import Source, anchor_mask, load_cameras, project, samples, zbuffer
 
 attempt, adir, work = (Path(a).resolve() for a in sys.argv[1:4])
 gpu = int(sys.argv[4])
 skip = set(sys.argv[5].split(",")) if len(sys.argv) > 5 else {"02", "05"}
 n_points = int(sys.argv[6]) if len(sys.argv) > 6 else 6_000_000
+cameras_file = Path(sys.argv[8]).resolve() if len(sys.argv) > 8 else None  # register_features.py's anchor cameras
 dev = torch.device(f"cuda:{gpu}")
 FRAME_SIZE = (768, 1024)
 RINGS = [(-20, 24), (0, 48), (20, 48), (40, 36), (60, 24), (80, 8)]  # (pitch, views); + looks down
@@ -56,26 +59,7 @@ seed = json.loads((attempt / "proxy" / "proxy.json").read_text())["seed"]
 report: dict = {}
 
 # 1. The mesh, in the splat frame, sampled by area.
-m = np.load(work / "mesh.npz")
-v = torch.from_numpy(m["vertices"]).to(dev) * torch.tensor([1.0, -1.0, -1.0], device=dev)
-f = torch.from_numpy(m["faces"]).to(dev)
-col = torch.from_numpy(m["colors"]).to(dev).clamp(0, 1)
-lo, hi = v.min(0).values, v.max(0).values
-v = (v - (lo + hi) / 2) / float(hi[1] - lo[1])
-tri = v[f]
-cross = torch.linalg.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-area = cross.norm(dim=1) / 2
-normals = cross / (2 * area[:, None] + 1e-12)
-g = torch.Generator(device=dev).manual_seed(0)
-pick = torch.multinomial(area / area.sum(), n_points, replacement=True, generator=g)
-r1, r2 = torch.rand(n_points, generator=g, device=dev), torch.rand(n_points, generator=g, device=dev)
-s1 = r1.sqrt()
-bary = torch.stack([1 - s1, s1 * (1 - r2), s1 * r2], 1)
-xyz = (tri[pick] * bary[:, :, None]).sum(1)
-nrm = normals[pick]
-base_rgb = (col[f[pick]] * bary[:, :, None]).sum(1)
-del tri, cross, area, normals, col
-spacing = math.sqrt(float((torch.linalg.cross(v[f][:, 1] - v[f][:, 0], v[f][:, 2] - v[f][:, 0]).norm(dim=1) / 2).sum()) / n_points)
+xyz, nrm, base_rgb, spacing = samples(work, n_points, dev)
 print(f"{n_points:,} samples, spacing {spacing:.5f}", flush=True)
 
 # 2. Cameras fitted to this mesh.
@@ -107,46 +91,20 @@ hero_cam, hero_iou = refine(hero_cam, hero_mask)
 print(f"hero: yaw {hero_cam.yaw:.1f} pitch {hero_cam.pitch:.1f} IoU {hero_iou:.3f}", flush=True)
 sources = [("hero", hero_img, hero_mask, hero_cam, HERO_WEIGHT)]
 reg = json.loads((adir / "registration.json").read_text())
-p = Masks.defaults
+solved = load_cameras(cameras_file) if cameras_file else {}
 for name in sorted(reg):
     if name in skip:
         continue
-    raw = adir / "raw"
-    subject = np.asarray(Image.open(raw / "subject" / "anchors" / f"{name}.png")) > 127
-    bg = raw / "background" / "anchors" / f"{name}.png"
-    mask = combine(subject, np.asarray(Image.open(bg)) > 127 if bg.exists() else None, p["touch_px"], p["gap_px"], p["max_add"])
-    cam, fit_iou = refine(campath.PathCamera.from_json(reg[name]["camera"]), mask)
-    print(f"{name}: yaw {cam.yaw:.1f} pitch {cam.pitch:.1f} IoU {reg[name]['iou']:.3f} (proxy) -> {fit_iou:.3f}", flush=True)
+    mask = anchor_mask(adir, name)
+    if name in solved:
+        cam = solved[name]
+        print(f"{name}: solved camera ({cameras_file.name})", flush=True)
+    else:
+        cam, fit_iou = refine(campath.PathCamera.from_json(reg[name]["camera"]), mask)
+        print(f"{name}: yaw {cam.yaw:.1f} pitch {cam.pitch:.1f} IoU {reg[name]['iou']:.3f} (proxy) -> {fit_iou:.3f}", flush=True)
     sources.append((name, Image.open(adir / f"{name}.png").convert("RGB"), mask, cam, 1.0))
 report["fits"] = {n: {"camera": c.to_json(), "iou": round(float(iou(points.silhouette(c, mk.shape[1], mk.shape[0]), mk)), 4)}
                   for n, _, mk, c, _ in sources}
-
-
-def project(cam: campath.PathCamera, w: int, h: int, pts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    rot, t = cam.world_to_camera()
-    rot_t, t_t = torch.tensor(rot, device=dev, dtype=torch.float32), torch.tensor(t, device=dev, dtype=torch.float32)
-    pc = pts @ rot_t.T + t_t
-    z = pc[:, 2]
-    fl = cam.focal(w, h)
-    zs = torch.where(z > 1e-3, z, torch.ones_like(z))
-    return fl * pc[:, 0] / zs + w / 2, fl * pc[:, 1] / zs + h / 2, z
-
-
-def zbuffer(u: torch.Tensor, vv: torch.Tensor, z: torch.Tensor, w: int, h: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Per sample: in view, its pixel index, and the nearest depth around that pixel. The nearest
-    depth is taken over 3x3 pixels: a pixel the front surface's samples happen to miss would
-    otherwise let the surface behind it through (speckles of the wrong part's color)."""
-    ok = (z > 1e-3) & (u >= 0) & (u < w) & (vv >= 0) & (vv < h)
-    pix = torch.where(ok, vv.long().clamp(0, h - 1) * w + u.long().clamp(0, w - 1), torch.zeros_like(z, dtype=torch.long))
-    zmin = torch.full((w * h,), float("inf"), device=dev)
-    zmin.scatter_reduce_(0, pix[ok], z[ok], reduce="amin")
-    zmin = -F.max_pool2d(-zmin.reshape(1, 1, h, w), 3, stride=1, padding=1).reshape(-1)
-    return ok, pix, zmin[pix]
-
-
-def sample(img: torch.Tensor, u: torch.Tensor, vv: torch.Tensor, w: int, h: int) -> torch.Tensor:
-    grid = torch.stack([2 * u / w - 1, 2 * vv / h - 1], 1)[None, None]
-    return F.grid_sample(img[None], grid, mode="bilinear", align_corners=False)[0, :, 0].T
 
 
 # 3. Paint: per source, colors and weights for every sample.
@@ -157,18 +115,7 @@ PAINT_TOL = float(sys.argv[7]) if len(sys.argv) > 7 else 0.012
 RENDER_TOL = 0.005
 cols, weights = [], []
 for name, img, mask, cam, boost in sources:
-    w, h = img.size
-    u, vv, z = project(cam, w, h, xyz)
-    ok, pix, zmin = zbuffer(u, vv, z, w, h)
-    visible = ok & (z <= zmin + PAINT_TOL)
-    inner = ndimage.binary_erosion(mask, iterations=2)
-    feather = np.clip(ndimage.distance_transform_edt(inner) / FEATHER_PX, 0, 1).astype(np.float32)
-    fe = sample(torch.from_numpy(feather).to(dev)[None], u, vv, w, h)[:, 0]
-    rot, _ = cam.world_to_camera()
-    to_cam = torch.tensor(cam.position(), device=dev, dtype=torch.float32) - xyz
-    cos = (nrm * to_cam).sum(1).abs() / to_cam.norm(dim=1)
-    wt = torch.where(visible, boost * cos**4 * fe, torch.zeros_like(cos))
-    rgb = sample(torch.from_numpy(np.asarray(img, dtype=np.float32) / 255).permute(2, 0, 1).to(dev), u, vv, w, h)
+    rgb, wt = Source(name, img, mask, cam, boost, dev, FEATHER_PX).paint(xyz, nrm, PAINT_TOL)
     cols.append(rgb)
     weights.append(wt)
     print(f"{name}: paints {(wt > 0).float().mean():.1%} of the surface", flush=True)
@@ -193,6 +140,16 @@ for i in order:
     cols[i] = (cols[i] * gain + offset).clamp(0, 1)
     gains[i] = (gain.tolist(), offset.tolist(), int(both.sum()))
 report["exposure"] = {sources[i][0]: gv for i, gv in gains.items()}
+
+# Agreement: how far each source's colors are from the other sources' blend where both see the
+# surface well (mean absolute difference, 0-1). Misregistered views disagree more.
+report["disagreement"] = {}
+for i, (name, *_rest) in enumerate(sources):
+    others = sum(weights[j] for j in range(len(sources)) if j != i)
+    blend = sum(weights[j][:, None] * cols[j] for j in range(len(sources)) if j != i) / others.clamp_min(1e-6)[:, None]
+    both = (weights[i] > 0.1) & (others > 0.1)
+    report["disagreement"][name] = round(float((cols[i][both] - blend[both]).abs().mean()), 4) if both.sum() > 2000 else None
+print("disagreement:", report["disagreement"], flush=True)
 
 W = torch.stack(weights) ** 2
 total = W.sum(0)
@@ -227,7 +184,7 @@ sheet.save(work / "sources.jpg", quality=88)
 # 4. Render the orbit and lay out the attempt.
 def render_view(cam: campath.PathCamera, w: int, h: int, values: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
     u, vv, z = project(cam, w, h, xyz)
-    ok, pix, zmin = zbuffer(u, vv, z, w, h)
+    ok, pix, zmin, _ = zbuffer(u, vv, z, w, h)
     front = ok & (z <= zmin + RENDER_TOL)
     acc = torch.zeros((w * h, values.shape[1]), device=dev).index_add_(0, pix[front], values[front])
     n = torch.zeros(w * h, device=dev).index_add_(0, pix[front], torch.ones_like(z[front]))
