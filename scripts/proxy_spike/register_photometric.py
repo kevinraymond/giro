@@ -140,7 +140,7 @@ for rnd in range(ROUNDS):
         ncc0, iou0, n0 = cost_parts(i, cam0, ref, ref_w)
         ncc1, iou1, n1 = cost_parts(i, sources[i].cam, ref, ref_w)
         report[sources[i].name] = {
-            "round": rnd + 1, "accepted": accept, "ncc": [round(ncc0, 4), round(ncc1, 4)], "iou": [round(iou0, 4), round(iou1, 4)],
+            "round": rnd + 1, "accepted": bool(accept), "ncc": [round(ncc0, 4), round(ncc1, 4)], "iou": [round(iou0, 4), round(iou1, 4)],
             "overlap": n1, "turn_from_start_deg": round(turn_deg(sources[i].cam, start[i]), 2),
             "moved_from_start": round(float(np.linalg.norm(sources[i].cam.position() - start[i].position())), 4),
             "fov": round(sources[i].cam.fov, 2), "camera": sources[i].cam.to_json()}

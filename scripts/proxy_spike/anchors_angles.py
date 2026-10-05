@@ -1,8 +1,9 @@
 """Anchor views straight from the hero with fal's Multiple-Angles LoRA for Qwen-Image-Edit 2511
 (Apache-2.0; trained on Gaussian-splat renders to move the camera around the subject on command).
-A first look: 8 azimuths at eye level and 4 elevated, as one review sheet. No proxy, no video.
+Default: 8 azimuths at eye level and 4 elevated; "all": the LoRA's 8 azimuths x 4 elevations
+(low-angle, eye-level, elevated, high-angle), 32 views. One review sheet. No proxy, no video.
 
-    anchors_angles.py HERO_PNG OUT GPU
+    anchors_angles.py HERO_PNG OUT GPU [all]
 """
 import asyncio
 import sys
@@ -19,6 +20,8 @@ out.mkdir(parents=True, exist_ok=True)
 AZIMUTHS = ["front view", "front-right quarter view", "right side view", "back-right quarter view", "back view",
             "back-left quarter view", "left side view", "front-left quarter view"]
 VIEWS = [(a, "eye-level shot") for a in AZIMUTHS] + [(a, "elevated shot") for a in AZIMUTHS[::2]]
+if len(sys.argv) > 4 and sys.argv[4] == "all":
+    VIEWS = [(a, e) for e in ("low-angle shot", "eye-level shot", "elevated shot", "high-angle shot") for a in AZIMUTHS]
 
 
 def workflow(hero: str, stamp: str) -> dict:
