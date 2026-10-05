@@ -41,13 +41,15 @@ ap.add_argument("--find", required=True, help="SAM text prompt for the region")
 ap.add_argument("--prompt", required=True, help="the edit")
 ap.add_argument("--yaw", type=float, default=180.0, help="look-from direction, degrees from the hero's")
 ap.add_argument("--pitch", type=float, default=10.0)
+ap.add_argument("--pick", choices=["all", "left", "right", "largest"], default="all",
+                help="which piece of SAM's mask, when it finds several (both wheels)")
 ap.add_argument("--fill", type=float, default=0.35, help="the region's share of the close view's height")
 ap.add_argument("--size", type=int, default=1024)
 ap.add_argument("--seed", type=int, default=1)
 args = ap.parse_args()
 work = args.work.resolve()
 dev = torch.device(f"cuda:{args.gpu}")
-out = work / f"patch-{re.sub(r'[^a-z0-9]+', '-', args.find.lower()).strip('-')}"
+out = work / f"patch-{re.sub(r'[^a-z0-9]+', '-', args.find.lower()).strip('-')}-{args.yaw:+.0f}"
 out.mkdir(exist_ok=True)
 
 saved = torch.load(args.texture)
@@ -70,7 +72,17 @@ async def find(comfy: ComfyClient, path: Path) -> np.ndarray:
     async for _ in comfy.run(sam_workflow({"region": [path]}, out / "raw", params)):
         pass
     m = out / "raw" / "subject" / "region" / path.name
-    return np.asarray(Image.open(m)) > 127 if m.exists() else np.zeros((S, S), bool)
+    mask = np.asarray(Image.open(m)) > 127 if m.exists() else np.zeros((S, S), bool)
+    mask = ndimage.binary_fill_holes(mask)  # what lies across the region (a fork over a wheel) is repainted too
+    lab, n = ndimage.label(mask)
+    if args.pick == "all" or n < 2:
+        return mask
+    idx = np.arange(1, n + 1)
+    sizes = ndimage.sum(mask, lab, idx)
+    big = idx[sizes >= 0.2 * sizes.max()]  # ignore crumbs
+    xs = np.array([ndimage.center_of_mass(mask, lab, i)[1] for i in big])
+    keep = {"left": big[np.argmin(xs)], "right": big[np.argmax(xs)], "largest": idx[np.argmax(sizes)]}[args.pick]
+    return lab == keep
 
 
 def edit_workflow(image: str) -> dict:
