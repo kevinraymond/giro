@@ -22,6 +22,7 @@ import math
 import os
 from pathlib import Path
 
+import numpy as np
 import torch
 
 import comfy.model_management
@@ -231,6 +232,34 @@ class GiroSaveSplat:
         return {}
 
 
+class GiroSaveMesh:
+    """Write a mesh (vertices, faces and vertex colors, in the mesh's own y-up frame) to an .npz
+    file at an absolute path inside giro's data roots."""
+
+    CATEGORY = "giro"
+    RETURN_TYPES = ()
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"mesh": ("MESH",), "path": ("STRING", {"default": ""})}}
+
+    def save(self, mesh, path):
+        p = _checked(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        v = mesh.vertices[0].float().cpu()
+        f = mesh.faces[0].long().cpu()
+        if mesh.vertex_counts is not None:
+            v, f = v[:int(mesh.vertex_counts[0])], f[:int(mesh.face_counts[0])]
+        out = {"vertices": v.numpy(), "faces": f.numpy()}
+        colors = getattr(mesh, "vertex_colors", None)
+        if colors is not None:
+            out["colors"] = colors[0].float().cpu()[:len(v), :3].numpy()
+        np.savez_compressed(p, **out)
+        return {}
+
+
 class GiroLoadSplat:
     """A splat from a PLY file at an absolute path inside giro's data roots."""
 
@@ -334,6 +363,7 @@ NODE_CLASS_MAPPINGS = {
     "GiroRenderSplatCameras": GiroRenderSplatCameras,
     "GiroSaveSplat": GiroSaveSplat,
     "GiroLoadSplat": GiroLoadSplat,
+    "GiroSaveMesh": GiroSaveMesh,
     "GiroMeshToSplat": GiroMeshToSplat,
     "GiroVaceControl": GiroVaceControl,
     "GiroWanFunControlToVideo": GiroWanFunControlToVideo,
@@ -345,5 +375,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GiroMeshToSplat": "giro: mesh surface as a splat",
     "GiroVaceControl": "giro: VACE control from a start frame and depth",
     "GiroLoadSplat": "giro: load splat (path)",
+    "GiroSaveMesh": "giro: save mesh (path)",
     "GiroWanFunControlToVideo": "giro: Wan 2.2 Fun Control with a first frame",
 }
