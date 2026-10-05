@@ -67,6 +67,13 @@ ap.add_argument("--save-texture", type=Path, help="write the painted samples' co
 ap.add_argument("--texture", type=Path, help="render this saved texture (patch_region.py's output) instead of painting")
 ap.add_argument("--rings", help="cameras to render, PITCH:VIEWS,... (default -20:24,0:48,20:48,40:36,60:24,80:8)")
 ap.add_argument("--out", default="attempt", help="attempt directory name under WORK")
+ap.add_argument("--exposure", choices=["match", "off"], default="match",
+                help="match each anchor's color spread to the hero's (or the views matched before); off: as generated. "
+                     "Oct 5, knight: on polished armor nearly every gain hit the 0.7 clamp, compounding down the "
+                     "chain to the rear anchors (dark, flat)")
+ap.add_argument("--mesh-fallback", default="", metavar="LO,HI",
+                help="where the views disagree (the w-weighted spread of their colors, before view selection) more than "
+                     "LO, blend toward the mesh's own colors, fully at HI (e.g. 0.08,0.16; empty: off)")
 ap.add_argument("--supersample", type=int, default=2,
                 help="render the frames this many times larger and shrink them: antialiased edges, and soft masks "
                      "(coverage) to train with dataset.mask_erode_px=0 (Oct 5, tank: cleaner silhouettes; 1: hard edges)")
@@ -165,7 +172,7 @@ if not (args.views or args.texture):  # anchors only: rendered views already agr
     # Exposure: each anchor matched to the hero (or to the blend of the views already matched).
     gains = {}
     order = sorted(range(1, len(sources)), key=lambda i: -float(((weights[i] > 0.1) & (weights[0] > 0.1)).sum()))
-    for i in order:
+    for i in order if args.exposure == "match" else []:
         ref_w = torch.stack([weights[j] for j in [0] + [k for k in order if k in gains]]).sum(0) if gains else weights[0]
         ref_c = (sum(weights[j][:, None] * cols[j] for j in [0] + [k for k in order if k in gains])
                  / ref_w.clamp_min(1e-6)[:, None]) if gains else cols[0]
@@ -208,6 +215,7 @@ for level_voxel in [float(x) for x in args.level_voxel.split(",") if x]:
         report.setdefault("leveling", {}).setdefault(str(level_voxel), {})[sources[i][0]] = round(float(offset[seen].abs().mean()), 4)
     print(f"leveling at {level_voxel}, mean offset:", report["leveling"][str(level_voxel)], flush=True)
 
+raw_weights = weights  # before view selection: how much each view saw, for the fallback's spread
 # View selection: each region takes its regionally best view (soft, so seams stay feathered).
 if args.select_power:
     local = torch.stack([smooth_field(xyz, wt[:, None], torch.ones_like(wt), 0.01, 2.0)[0][:, 0].clamp_min(0)
@@ -228,6 +236,26 @@ for i, (wt, c) in enumerate(zip(weights, cols)):  # one view at a time: ~100 vie
 painted = total > 1e-8
 rgb = torch.where(painted[:, None], acc / total.clamp_min(1e-12)[:, None], base_rgb)
 winner = torch.where(painted, winner, -1)
+if args.mesh_fallback and not args.texture:
+    # Where the views disagree, none of them is to be trusted: the mesh's own colors (the 3D model's,
+    # from the hero) are coherent if plain. Spread: the weighted standard deviation of the views' colors.
+    lo, hi = (float(x) for x in args.mesh_fallback.split(","))
+    t2 = torch.zeros_like(total)
+    m1 = torch.zeros_like(base_rgb)
+    m2 = torch.zeros_like(base_rgb)
+    for wt, c in zip(raw_weights, cols):
+        w2 = wt**2
+        t2 += w2
+        m1 += w2[:, None] * c.float()
+        m2 += w2[:, None] * c.float() ** 2
+    mean = m1 / t2.clamp_min(1e-12)[:, None]
+    spread = (m2 / t2.clamp_min(1e-12)[:, None] - mean**2).clamp_min(0).mean(1).sqrt()
+    a = ((spread - lo) / (hi - lo)).clamp(0, 1) * painted
+    rgb = rgb * (1 - a[:, None]) + base_rgb * a[:, None]
+    report["mesh_fallback"] = {"mean": round(float(a[painted].mean()), 4), "full": round(float((a[painted] > 0.99).float().mean()), 4)}
+    print(f"mesh fallback: mean blend {report['mesh_fallback']['mean']:.1%}, fully mesh on "
+          f"{report['mesh_fallback']['full']:.1%} of the painted surface", flush=True)
+    del m1, m2
 if args.texture:
     saved = torch.load(args.texture)
     assert saved["points"] == n_points, f"{args.texture} was painted on {saved['points']} samples, not {n_points}"

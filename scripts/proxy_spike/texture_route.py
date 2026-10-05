@@ -47,6 +47,9 @@ ap.add_argument("--subject", default="object", help="what the hero shows, for th
                 "e.g. 'desert tan M1 Abrams tank'")
 ap.add_argument("--fill", nargs="?", const="", metavar="SUBJECT",
                 help="generative fill of the surface no view painted (fill_unseen.py); SUBJECT, if given, sets --subject")
+ap.add_argument("--exposure", choices=["match", "off"], default="match",
+                help="project_texture.py --exposure: off for reflective subjects (Oct 5, knight: the matched gains "
+                     "hit their clamp and darkened the rear)")
 ap.add_argument("--no-progressive", action="store_true", help="skip progressive painting (progressive_paint.py)")
 ap.add_argument("--max-splats", type=int, default=300_000)
 ap.add_argument("--library", help="also make a library job with this name")
@@ -125,7 +128,8 @@ save()
 
 print("5. texture", flush=True)
 run("project_texture.py", str(attempt), str(angles), str(work), g, "--skip", S2, "--cameras", str(work / "anchor_cameras.json"),
-    "--warps", str(work / "warps.pt"), "--select-power", "6", "--save-texture", str(work / "texture-0.pt"), "--out", "scratch")
+    "--warps", str(work / "warps.pt"), "--select-power", "6", "--exposure", args.exposure, "--save-texture", str(work / "texture-0.pt"),
+    "--out", "scratch")
 tex = work / "texture-0.pt"
 for k, spec in enumerate(args.patch, 1):
     find, prompt, yaw, pitch, *pick = spec.split("::")
@@ -152,6 +156,7 @@ route["texture"] = json.loads((work / "texture.json").read_text()).get("painted"
 route["patches"] = args.patch
 route["fill"] = args.subject if fill else None
 route["progressive"] = not args.no_progressive
+route["exposure"] = args.exposure
 save()
 
 print("6. training", flush=True)
