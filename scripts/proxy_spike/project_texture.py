@@ -52,6 +52,8 @@ ap.add_argument("--points", type=int, default=6_000_000, help="surface samples")
 ap.add_argument("--paint-tol", type=float, default=0.012, help="depth tolerance for painting, proxy units")
 ap.add_argument("--cameras", type=Path, help="register_photometric.py's anchor cameras (else silhouette fits)")
 ap.add_argument("--warps", type=Path, help="warp_views.py's per-view warp grids")
+ap.add_argument("--exclude", type=Path, help="thin_parts.py's exclude/ masks: those pixels paint nothing")
+ap.add_argument("--extra", type=Path, help="thin_parts.py's extra.npz: points the mesh lacks, rendered with it")
 ap.add_argument("--select-power", type=float, default=0.0,
                 help="view selection: weights times their local average (1 cm voxels, sigma 2) to this power, "
                      "so each region takes its regionally best view (0: off)")
@@ -144,6 +146,9 @@ RENDER_TOL = 0.005
 warps = torch.load(args.warps) if args.warps else {}
 cols, weights = [], []
 for name, img, mask, cam, boost in sources:
+    ex = args.exclude / f"{name}.png" if args.exclude else None
+    if ex is not None and ex.exists():
+        mask = mask & ~(np.asarray(Image.open(ex)) > 127)
     rgb, wt = Source(name, img, mask, cam, boost, dev, FEATHER_PX, warps.get(name)).paint(xyz, nrm, PAINT_TOL)
     cols.append(rgb.half() if args.views else rgb)
     weights.append(wt)
@@ -253,8 +258,18 @@ sheet.save(work / "sources.jpg", quality=88)
 
 
 # 4. Render the orbit and lay out the attempt.
+if args.extra:  # points the mesh lacks (thin_parts.py), rendered with the painted samples
+    extra = np.load(args.extra)
+    xyz_r = torch.cat([xyz, torch.from_numpy(extra["xyz"]).to(dev)])
+    rgb = torch.cat([rgb, torch.from_numpy(extra["rgb"]).to(dev)])
+    winner = torch.cat([winner, torch.full((len(extra["xyz"]),), -1, device=dev, dtype=winner.dtype)])
+    report["extra_points"] = len(extra["xyz"])
+else:
+    xyz_r = xyz
+
+
 def render_view(cam: campath.PathCamera, w: int, h: int, values: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-    return render_points(xyz, values, cam, w, h, RENDER_TOL)
+    return render_points(xyz_r, values, cam, w, h, RENDER_TOL)
 
 
 out = work / args.out

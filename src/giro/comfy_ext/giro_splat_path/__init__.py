@@ -260,6 +260,28 @@ class GiroSaveMesh:
         return {}
 
 
+class GiroSaveMoGe:
+    """Write a MOGE_GEOMETRY packet's float maps (depth, mask, normal, intrinsics; one image) to an
+    .npz at an absolute path inside giro's data roots: MoGeRender only exports 8-bit images."""
+
+    CATEGORY = "giro"
+    RETURN_TYPES = ()
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"moge_geometry": ("MOGE_GEOMETRY",), "path": ("STRING", {"default": ""})}}
+
+    def save(self, moge_geometry, path):
+        p = _checked(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        out = {k: moge_geometry[k][0].float().cpu().numpy() for k in ("depth", "mask", "normal", "intrinsics")
+               if moge_geometry.get(k) is not None}
+        np.savez_compressed(p, **out)
+        return {}
+
+
 class GiroLoadSplat:
     """A splat from a PLY file at an absolute path inside giro's data roots."""
 
@@ -364,6 +386,7 @@ NODE_CLASS_MAPPINGS = {
     "GiroSaveSplat": GiroSaveSplat,
     "GiroLoadSplat": GiroLoadSplat,
     "GiroSaveMesh": GiroSaveMesh,
+    "GiroSaveMoGe": GiroSaveMoGe,
     "GiroMeshToSplat": GiroMeshToSplat,
     "GiroVaceControl": GiroVaceControl,
     "GiroWanFunControlToVideo": GiroWanFunControlToVideo,
@@ -376,5 +399,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GiroVaceControl": "giro: VACE control from a start frame and depth",
     "GiroLoadSplat": "giro: load splat (path)",
     "GiroSaveMesh": "giro: save mesh (path)",
+    "GiroSaveMoGe": "giro: save MoGe depth (path)",
     "GiroWanFunControlToVideo": "giro: Wan 2.2 Fun Control with a first frame",
 }
