@@ -40,7 +40,7 @@ from scipy import ndimage, optimize
 from giro import path as campath
 from giro.stages.fallback import _qvec
 from giro.stages.proxy import Points, fit_hero_camera, iou
-from texture_common import Source, anchor_mask, load_cameras, render_points, samples, smooth_field
+from texture_common import Source, anchor_mask, fingerprint, load_cameras, render_points, samples, smooth_field
 
 ap = argparse.ArgumentParser()
 ap.add_argument("attempt", type=Path)
@@ -220,11 +220,13 @@ winner = torch.where(painted, winner, -1)
 if args.texture:
     saved = torch.load(args.texture)
     assert saved["points"] == n_points, f"{args.texture} was painted on {saved['points']} samples, not {n_points}"
+    assert abs(saved["fingerprint"] - fingerprint(xyz)) < 1e-3, f"{args.texture} was painted on other samples"
     rgb, winner = saved["rgb"].to(dev).float(), saved["winner"].to(dev)
     painted = winner >= 0
     winner = torch.where(painted, 0, -1)  # the coverage sheet shows painted vs not (the sources are gone)
 if args.save_texture:
-    torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": n_points}, args.save_texture)
+    torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": n_points, "fingerprint": fingerprint(xyz)},
+               args.save_texture)
 report["painted"] = round(float(painted.float().mean()), 4)
 print(f"painted {painted.float().mean():.1%} of the surface; the rest keeps the mesh's colors", flush=True)
 del acc, best

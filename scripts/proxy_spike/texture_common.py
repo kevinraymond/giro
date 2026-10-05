@@ -63,9 +63,11 @@ def samples(work: Path, n: int, dev: torch.device) -> tuple[torch.Tensor, torch.
     cross = torch.linalg.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     area = cross.norm(dim=1) / 2
     normals = cross / (2 * area[:, None] + 1e-12)
-    g = torch.Generator(device=dev).manual_seed(0)
-    pick = torch.multinomial(area / area.sum(), n, replacement=True, generator=g)
-    r1, r2 = torch.rand(n, generator=g, device=dev), torch.rand(n, generator=g, device=dev)
+    # On the CPU: CUDA's multinomial is not reproducible (2M of 6M samples moved between two runs),
+    # and a saved texture (project_texture.py --save-texture) is indexed by sample.
+    g = torch.Generator().manual_seed(0)
+    pick = torch.multinomial((area / area.sum()).double().cpu(), n, replacement=True, generator=g).to(dev)
+    r1, r2 = torch.rand(n, generator=g).to(dev), torch.rand(n, generator=g).to(dev)
     s1 = r1.sqrt()
     bary = torch.stack([1 - s1, s1 * (1 - r2), s1 * r2], 1)
     xyz = (tri[pick] * bary[:, :, None]).sum(1)
@@ -206,3 +208,8 @@ def render_points(xyz: torch.Tensor, values: torch.Tensor, cam: Any, w: int, h: 
         filled = filled | (den > 0)
     mask = ndimage.binary_opening(ndimage.binary_closing(filled.cpu().numpy(), iterations=2), iterations=1)
     return img.cpu().numpy(), mask
+
+
+def fingerprint(xyz: torch.Tensor) -> float:
+    """A checksum of the samples, saved with a texture so it is never read onto other samples."""
+    return float(xyz[:: max(1, len(xyz) // 10007)].double().sum())

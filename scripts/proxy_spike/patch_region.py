@@ -29,7 +29,7 @@ from giro import path as campath
 from giro.comfy import server
 from giro.comfy.client import ComfyClient, Done
 from giro.stages.masks import Masks, sam_workflow
-from texture_common import project, render_points, sample, samples, zbuffer
+from texture_common import fingerprint, project, render_points, sample, samples, zbuffer
 
 ap = argparse.ArgumentParser()
 ap.add_argument("attempt", type=Path)
@@ -52,6 +52,7 @@ out.mkdir(exist_ok=True)
 
 saved = torch.load(args.texture)
 xyz, _, _, _ = samples(work, saved["points"], dev)
+assert abs(saved["fingerprint"] - fingerprint(xyz)) < 1e-3, f"{args.texture} was painted on other samples"
 rgb = saved["rgb"].to(dev).float()
 hero = campath.PathCamera.from_json(json.loads((work / "texture.json").read_text())["fits"]["hero"]["camera"])
 S = args.size
@@ -155,7 +156,8 @@ async def main() -> None:
     winner = torch.where(a > 0.5, torch.full_like(winner, len(saved.get("patches", [])) + 1000), winner)
     patches = saved.get("patches", []) + [{"find": args.find, "prompt": args.prompt, "camera": close.to_json(),
                                           "samples": int((a > 0.5).sum())}]
-    torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": saved["points"], "patches": patches}, args.save)
+    torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": saved["points"],
+                "fingerprint": saved["fingerprint"], "patches": patches}, args.save)
     after, _ = render_points(xyz, rgb, close, S, S)
     sheet = Image.new("RGB", (3 * S, S))
     for k, im in enumerate([before, edited, Image.fromarray((np.clip(after, 0, 1) * 255).astype(np.uint8))]):
