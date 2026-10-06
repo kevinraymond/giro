@@ -155,7 +155,7 @@ async def main() -> None:
 
         for i, name in enumerate(names):
             od = args.out / name
-            if (od / "gt_cameras.json").exists():
+            if (od / "gt_cameras.json").exists() or (od / "failed.txt").exists():
                 continue
             rd = args.renders / name
             if not (rd / "cameras.json").exists():  # no hero render (the renderer skipped a broken model)
@@ -186,7 +186,12 @@ async def main() -> None:
                     pass
                 t_gen = time.monotonic() - t0
                 points = Points(work / "candidates" / f"proxy_{args.seed}.ply")
-                hero_cam, fit = fit_hero_camera(points, hero, mask, FOV)
+                try:
+                    hero_cam, fit = fit_hero_camera(points, hero, mask, FOV)
+                except (AssertionError, ValueError) as e:  # Oct 6: a proxy no hero silhouette fits; skip it, don't stall
+                    (od / "failed.txt").write_text(f"hero fit: {type(e).__name__}: {e}\n")
+                    log(f"[{i + 1}/{len(names)}] {name}: hero fit failed ({type(e).__name__}), skipped")
+                    continue
                 fit_sheet(points, hero_cam, hero, mask).save(od / "hero_fit.jpg", quality=85)
                 t_fit = time.monotonic() - t0 - t_gen
             views = paint_and_render(work, hero, mask, hero_cam, plan, od)
