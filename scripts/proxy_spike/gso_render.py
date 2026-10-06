@@ -29,6 +29,7 @@ CONTROLS_DIR/<name>/target/<view>.png (RGBA) and target/depth/<view>.npy.
 Depth: float16 camera z (along the view direction, object units), inf off the object.
 """
 import argparse
+import os
 import csv
 import json
 import math
@@ -123,6 +124,11 @@ def setup_scene() -> None:
                 break
     sc.cycles.samples = args.samples
     sc.cycles.use_denoising = True
+    if sc.cycles.device == "GPU" and os.environ.get("GSO_GPU_DENOISE", "1") == "1":
+        # OpenImageDenoise on the GPU: on the CPU it took most of a frame's time (Oct 6)
+        sc.cycles.denoiser = "OPENIMAGEDENOISE"
+        if hasattr(sc.cycles, "denoising_use_gpu"):
+            sc.cycles.denoising_use_gpu = True
     sc.render.threads_mode = "FIXED"
     sc.render.threads = args.threads
     sc.render.resolution_x, sc.render.resolution_y, sc.render.resolution_percentage = W, H, 100
