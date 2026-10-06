@@ -231,8 +231,9 @@ the result. If that fails too, it goes back to COLMAP's cameras and on to gap fi
   sat 1.6%, 1.7%, 2.4% and 4.9% of the orbit radius from COLMAP's. Brush on the raw poses lost
   2–4 dB (24.5 dB with COLMAP; 22.4, 20.7, 21.2 and 20.7 dB).
 - After refinement all four landed within 0.3 dB of COLMAP (24.2, 23.9, 24.4 and 24.5 dB).
-  DA3-Base refines as well as the larger checkpoints, takes about 4 s, and is the only DA3 size
-  under Apache-2.0, so giro uses it.
+  DA3-Base refines as well as DA3-Giant, takes about 4 s, and is under Apache-2.0, so giro uses
+  it. Of the DA3 checkpoints, Small, Base, Metric-Large, Mono-Large and Large-1.1 are Apache-2.0;
+  Large (1.0), Giant and the Nested models are CC BY-NC 4.0.
 - Bundle adjustment cannot place frames that too few triangulated points see: the same smeared
   frames COLMAP dropped. Plain refinement drops them again and the jump comes back (37–80°).
   giro keeps their DA3 pose instead, moved into the refined frame by a similarity fitted on the
