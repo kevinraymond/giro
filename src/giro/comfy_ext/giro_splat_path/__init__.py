@@ -162,7 +162,11 @@ class GiroMeshToSplat:
         tri = v[f]  # (F, 3, 3)
         area = torch.linalg.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]).norm(dim=1) / 2
         g = torch.Generator().manual_seed(seed)
-        pick = torch.multinomial(area / area.sum(), count, replacement=True, generator=g)
+        if len(area) < 2**24:
+            pick = torch.multinomial(area / area.sum(), count, replacement=True, generator=g)
+        else:  # multinomial takes at most 2^24 categories (a dense Pixal3D mesh can have more faces)
+            cdf = torch.cumsum(area.double(), 0)
+            pick = torch.searchsorted(cdf, torch.rand(count, generator=g, dtype=torch.float64) * cdf[-1]).clamp_max(len(area) - 1)
         r1, r2 = torch.rand(count, generator=g), torch.rand(count, generator=g)
         s1 = r1.sqrt()
         bary = torch.stack([1 - s1, s1 * (1 - r2), s1 * r2], 1)  # uniform on each triangle
@@ -380,7 +384,39 @@ def _known_frames(length, width, height, start_image, end_image):
     return clip
 
 
+class GiroPixal3DPosedConditioning:
+    """Pixal3D multi-view conditioning from views at any camera: VIEWS_DIR holds view_NN.png
+    (square, the subject on black, the principal point at the center) and cameras.json
+    ({"views": [{"image": "view_00.png", "c2w": 4x4, "fov_x": degrees}, ...]}, cameras in the
+    projection world: z up, OpenGL axes, the subject inside the unit cube at the origin). The
+    native Pixal3DMultiViewConditioning takes only four views at elevation 0 and one fov."""
+
+    CATEGORY = "giro"
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING")
+    RETURN_NAMES = ("positive", "negative")
+    FUNCTION = "condition"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"clip_vision_model": ("CLIP_VISION",), "views_dir": ("STRING", {"default": ""})}}
+
+    def condition(self, clip_vision_model, views_dir):
+        from PIL import Image
+        from comfy_extras.nodes_trellis2 import _build_pixal3d_conditioning
+
+        d = _checked(views_dir)
+        views = json.loads((d / "cameras.json").read_text())["views"]
+        imgs = [torch.from_numpy(np.asarray(Image.open(d / v["image"]).convert("RGB").resize((1024, 1024)),
+                                            dtype=np.float32) / 255.0)[None] for v in views]
+        c2w = torch.tensor([v["c2w"] for v in views], dtype=torch.float32)
+        fov = torch.tensor([math.radians(v["fov_x"]) for v in views], dtype=torch.float32)
+        out = _build_pixal3d_conditioning(clip_vision_model, torch.cat(imgs, 0), c2w, fov, torch.ones(1),
+                                          num_views=len(views))
+        return tuple(out.result) if hasattr(out, "result") else tuple(out)
+
+
 NODE_CLASS_MAPPINGS = {
+    "GiroPixal3DPosedConditioning": GiroPixal3DPosedConditioning,
     "GiroRenderSplatPath": GiroRenderSplatPath,
     "GiroRenderSplatCameras": GiroRenderSplatCameras,
     "GiroSaveSplat": GiroSaveSplat,
@@ -392,6 +428,7 @@ NODE_CLASS_MAPPINGS = {
     "GiroWanFunControlToVideo": GiroWanFunControlToVideo,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "GiroPixal3DPosedConditioning": "giro: Pixal3D multi-view conditioning at any cameras",
     "GiroRenderSplatPath": "giro: render splat along a path",
     "GiroRenderSplatCameras": "giro: render splat from cameras",
     "GiroSaveSplat": "giro: save splat (path)",

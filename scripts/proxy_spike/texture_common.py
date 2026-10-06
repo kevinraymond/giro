@@ -54,10 +54,13 @@ def samples(work: Path, n: int, dev: torch.device, mesh: str = "mesh.npz") -> tu
     """WORK/mesh.npz (or WORK/`mesh`) in the splat frame (as GiroMeshToSplat moves it), sampled by
     area: positions, face normals, the mesh's colors, and the spacing between samples."""
     m = np.load(work / mesh)
-    v = torch.from_numpy(m["vertices"]).to(dev) * torch.tensor([1.0, -1.0, -1.0], device=dev)
-    f = torch.from_numpy(m["faces"]).to(dev)
-    col = torch.from_numpy(m["colors"]).to(dev).clamp(0, 1)
+    v = torch.from_numpy(m["vertices"]).to(dev).float() * torch.tensor([1.0, -1.0, -1.0], device=dev)
+    f = torch.from_numpy(m["faces"]).to(dev).long()
+    col = torch.from_numpy(m["colors"]).to(dev).float().clamp(0, 1)
     lo, hi = v.min(0).values, v.max(0).values
+    if "bounds" in m.files:  # a decimated mesh (gso_shrink.py) keeps the original's box, so it lands where it did
+        lo, hi = (torch.from_numpy(b).to(dev) * torch.tensor([1.0, -1.0, -1.0], device=dev) for b in m["bounds"])
+        lo, hi = torch.minimum(lo, hi), torch.maximum(lo, hi)
     v = (v - (lo + hi) / 2) / float(hi[1] - lo[1])
     tri = v[f]
     cross = torch.linalg.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
@@ -66,7 +69,11 @@ def samples(work: Path, n: int, dev: torch.device, mesh: str = "mesh.npz") -> tu
     # On the CPU: CUDA's multinomial is not reproducible (2M of 6M samples moved between two runs),
     # and a saved texture (project_texture.py --save-texture) is indexed by sample.
     g = torch.Generator().manual_seed(0)
-    pick = torch.multinomial((area / area.sum()).double().cpu(), n, replacement=True, generator=g).to(dev)
+    if len(area) < 2**24:
+        pick = torch.multinomial((area / area.sum()).double().cpu(), n, replacement=True, generator=g).to(dev)
+    else:  # multinomial takes at most 2^24 categories (a dense Pixal3D mesh can have more faces)
+        cdf = torch.cumsum(area.double().cpu(), 0)
+        pick = torch.searchsorted(cdf, torch.rand(n, generator=g, dtype=torch.float64) * cdf[-1]).clamp_max(len(area) - 1).to(dev)
     r1, r2 = torch.rand(n, generator=g).to(dev), torch.rand(n, generator=g).to(dev)
     s1 = r1.sqrt()
     bary = torch.stack([1 - s1, s1 * (1 - r2), s1 * r2], 1)
@@ -267,12 +274,13 @@ def bake(src: Source, erode: int = 2) -> tuple[np.ndarray, np.ndarray]:
 
 
 def qwen_edit_workflow(image: str, prompt: str, seed: int = 1, prefix: str = "giro/edit", mask: str | None = None,
-                       ref: str | None = None, denoise: float = 1.0) -> dict:
+                       ref: str | None = None, denoise: float = 1.0, lora: str | None = None, steps: int = 4) -> dict:
     """Qwen-Image-Edit 2511 (Apache-2.0), Lightning 4 steps, on one uploaded image. With `mask` (an
     uploaded image, white = repaint) the sampling is masked: only those pixels change, so the edit
     cannot move the camera (unmasked, it turns unusual views, a tank from below, into usual ones).
     `ref` is a second uploaded image the prompt can name as picture 2 (the output keeps picture 1's
-    size); `denoise` below 1 starts from the image itself, partly noised."""
+    size); `denoise` below 1 starts from the image itself, partly noised. `lora` stacks one more LoRA
+    (a loras/ path, strength 1) on Lightning, e.g. qwen/qwen-image-edit-2511-gaussian-splash.safetensors."""
     wf = {
         "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_edit_2511_int8_convrot.safetensors", "weight_dtype": "default"}},
         "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
@@ -289,11 +297,14 @@ def qwen_edit_workflow(image: str, prompt: str, seed: int = 1, prefix: str = "gi
         "neg": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["scaled", 0], "prompt": ""}},
         "negr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["neg", 0], "reference_latents_method": "index_timestep_zero"}},
         "sample": {"class_type": "KSampler", "inputs": {"model": ["lightning", 0], "positive": ["posr", 0], "negative": ["negr", 0],
-                   "latent_image": ["latent", 0], "seed": seed, "steps": 4, "cfg": 1.0, "sampler_name": "euler",
+                   "latent_image": ["latent", 0], "seed": seed, "steps": steps, "cfg": 1.0, "sampler_name": "euler",
                    "scheduler": "simple", "denoise": denoise}},
         "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
         "save": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": prefix}},
     }
+    if lora:
+        wf["extra_lora"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["lightning", 0], "strength_model": 1.0, "lora_name": lora}}
+        wf["sample"]["inputs"]["model"] = ["extra_lora", 0]
     if ref:
         wf |= {
             "ref_img": {"class_type": "LoadImage", "inputs": {"image": ref, "upload": "image"}},
