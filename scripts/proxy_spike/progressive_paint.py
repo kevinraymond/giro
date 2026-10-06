@@ -44,7 +44,7 @@ ap.add_argument("gpu", type=int)
 ap.add_argument("--texture", type=Path, required=True)
 ap.add_argument("--save", type=Path, required=True)
 ap.add_argument("--subject", default="object")
-ap.add_argument("--every", type=int, default=2, help="every Nth camera of WORK/attempt")
+ap.add_argument("--every", type=int, default=2, help="every Nth camera of WORK/attempt (0: the key views only, no masked pass)")
 ap.add_argument("--denoise", type=float, default=0.6)
 ap.add_argument("--better", type=float, default=1.5, help="regenerate where this view's quality is this many times the locked one")
 ap.add_argument("--min-px", type=int, default=1500, help="skip views with fewer pixels to regenerate")
@@ -155,7 +155,7 @@ def nearest(yaw: float, pitch: float) -> int:
 keys = [nearest(hero.yaw + 360 * k / int(n), float(p)) for p, n in (spec.split(":") for spec in args.keys.split(",") if spec)
         for k in range(int(n))]
 keys = sorted(dict.fromkeys(keys), key=lambda i: angle_from_hero(all_cams[i]))
-order = sorted(range(0, len(all_cams), args.every), key=lambda i: angle_from_hero(all_cams[i]))
+order = [] if args.every <= 0 else sorted(range(0, len(all_cams), args.every), key=lambda i: angle_from_hero(all_cams[i]))
 
 
 async def paint_view(comfy: ComfyClient, ref: str, i: int, whole: bool, better: float, report: list) -> None:

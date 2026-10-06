@@ -2,7 +2,7 @@
 anchor is generated at a known camera from the route's own render, so its pose is exact by construction.
 
     lora_anchors.py ATTEMPT WORK OUT GPU [--lora qwen/gso-view-v1-750.safetensors] [--grid -15,5,30,55]
-        [--azimuths 8] [--size 768x1024] [--fill 0.65] [--seed 11]
+        [--azimuths 8 | --views YAW:PITCH,...] [--size 768x1024] [--fill 0.65] [--seed 11]
     lora_anchors.py ATTEMPT WORK OUT GPU --finalize      (after register_anchors.py OUT: exact cameras in)
 
 WORK holds the route's mesh.npz and texture.json (the hero's camera fitted to that mesh). As the LoRA was
@@ -42,6 +42,8 @@ ap.add_argument("gpu", type=int)
 ap.add_argument("--lora", default="qwen/gso-view-v1-750.safetensors")
 ap.add_argument("--grid", default="-15,5,30,55", help="pitches (the training rings span -15..65)")
 ap.add_argument("--azimuths", type=int, default=8, help="per pitch, from the hero's yaw")
+ap.add_argument("--views", default="", metavar="YAW:PITCH,...",
+                help="these cameras (yaw relative to the hero, giro.path's sign) instead of --grid x --azimuths")
 ap.add_argument("--size", default="768x1024", help="WxH of image 1 and the anchors (training size)")
 ap.add_argument("--fill", type=float, default=0.65, help="the subject's larger extent, as a share of the frame")
 ap.add_argument("--points", type=int, default=3_000_000)
@@ -129,9 +131,12 @@ col, wt = Source("hero", hero, hmask, hero_cam, 1.0, dev).paint(xyz, nrm, args.p
 rgb = (col * wt[:, None] + base * BASE_WEIGHT) / (wt[:, None] + BASE_WEIGHT)
 
 views = []
-for p in (float(x) for x in args.grid.split(",")):
-    for k in range(args.azimuths):
-        rel = 360.0 * k / args.azimuths
+if args.views:
+    plan = [(float(y), float(p)) for y, p in (v.split(":") for v in args.views.split(","))]
+else:
+    plan = [(360.0 * k / args.azimuths, float(p)) for p in args.grid.split(",") for k in range(args.azimuths)]
+for rel, p in plan:
+    if True:
         name = f"{len(views):02d}"
         cam = framed(replace(hero_cam, yaw=hero_cam.yaw + rel, pitch=p), xyz, nrm)
         img, m = render_points(xyz, rgb, cam, W * SS, H * SS, nrm=nrm)

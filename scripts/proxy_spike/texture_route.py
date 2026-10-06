@@ -54,6 +54,10 @@ ap.add_argument("--no-progressive", action="store_true", help="skip progressive 
 ap.add_argument("--progressive-lora", default="", metavar="LORA",
                 help="progressive painting with the GSO view LoRA (progressive_paint.py --lora; needs --lora-ref)")
 ap.add_argument("--lora-ref", type=Path, help="the hero as the view LoRA saw it (lora_anchors.py's hero_ref.png)")
+ap.add_argument("--progressive-keys", default="20:8", metavar="PITCH:N,...",
+                help="progressive_paint.py --keys: key views edited whole first")
+ap.add_argument("--progressive-every", type=int, default=2,
+                help="progressive_paint.py --every: masked pass over every Nth camera (0: key views only)")
 ap.add_argument("--parts", default="", metavar="PROMPTS",
                 help="part-aware painting (parts.py), e.g. 'tire,wheel rim': SAM labels the views (part_masks.py) and "
                      "a pixel paints only surface of its own part, in the texture and the progressive pass (#3720)")
@@ -160,7 +164,9 @@ if not args.no_progressive:
     nxt = work / "texture-prog.pt"
     run("progressive_paint.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--subject", args.subject,
         *(["--lora", args.progressive_lora, "--lora-ref", str(args.lora_ref.resolve())] if args.progressive_lora else []),
-        *(["--parts", args.parts] if args.parts else []))
+        *(["--parts", args.parts] if args.parts else []),
+        *(["--keys", args.progressive_keys] if args.progressive_keys != "20:8" else []),
+        *(["--every", str(args.progressive_every)] if args.progressive_every != 2 else []))
     tex = nxt
 if args.patch or fill or not args.no_progressive:
     comfy_down()
@@ -169,6 +175,8 @@ route["texture"] = json.loads((work / "texture.json").read_text()).get("painted"
 route["patches"] = args.patch
 route["fill"] = args.subject if fill else None
 route["progressive"] = not args.no_progressive
+if not args.no_progressive:
+    route["progressive_keys"], route["progressive_every"] = args.progressive_keys, args.progressive_every
 route["exposure"] = args.exposure
 route["parts"] = args.parts or None
 save()
