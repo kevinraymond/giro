@@ -157,9 +157,12 @@ async def main() -> None:
             od = args.out / name
             if (od / "gt_cameras.json").exists():
                 continue
+            rd = args.renders / name
+            if not (rd / "cameras.json").exists():  # no hero render (the renderer skipped a broken model)
+                log(f"[{i + 1}/{len(names)}] {name}: no hero render, skipped")
+                continue
             work = od / "work"
             work.mkdir(parents=True, exist_ok=True)
-            rd = args.renders / name
             cams = json.loads((rd / "cameras.json").read_text())
             hero_g = campath.PathCamera.from_json(cams["views"][0])
             plan = cams["views"][1:]

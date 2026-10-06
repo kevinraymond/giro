@@ -213,9 +213,12 @@ def object_mesh(parts: list) -> trimesh.Trimesh:
         me = o.data
         me.calc_loop_triangles()
         mw = np.array(o.matrix_world)
-        v = np.array([v.co[:] for v in me.vertices])
+        v = np.array([v.co[:] for v in me.vertices]).reshape(-1, 3)
+        f = np.array([t.vertices[:] for t in me.loop_triangles], dtype=np.int64).reshape(-1, 3)
+        if not len(f):  # a part with no faces (points or loose edges, seen in Objaverse GLBs)
+            continue
         vs.append(v @ mw[:3, :3].T + mw[:3, 3])
-        fs.append(np.array([t.vertices[:] for t in me.loop_triangles]) + n)
+        fs.append(f + n)
         n += len(v)
     return trimesh.Trimesh(np.concatenate(vs), np.concatenate(fs), process=False)
 
@@ -304,10 +307,23 @@ def main() -> None:
     t_all = time.monotonic()
     for i, name in enumerate(names):
         t0 = time.monotonic()
+        try:
+            one(i, name, names, model_of, depth_of)
+        except Exception as e:  # one broken model must not stop the pass (Oct 6: an Objaverse GLB did)
+            print(f"[{i + 1}/{len(names)}] {name}: FAILED {type(e).__name__}: {e}", flush=True)
+            continue
+        dt = time.monotonic() - t0
+        print(f"[{i + 1}/{len(names)}] {name}: {dt:.1f} s", flush=True)
+    print(f"done {len(names)} objects in {time.monotonic() - t_all:.0f} s", flush=True)
+
+
+def one(i: int, name: str, names: list, model_of, depth_of) -> None:
+    """Render one object: its hero (and plan), or with --aligned its ground truth."""
+    if True:
         if args.aligned:
             cd = args.aligned / name
             if not (cd / "gt_cameras.json").exists() or (cd / "target" / "done").exists():
-                continue
+                return
             parts, _ = load_object(model_of(name))
             mesh = object_mesh(parts)
             views = json.loads((cd / "gt_cameras.json").read_text())["views"]
@@ -317,12 +333,12 @@ def main() -> None:
         else:
             od = args.out / name
             if (od / "cameras.json").exists():
-                continue
+                return
             od.mkdir(parents=True, exist_ok=True)
             parts, radius = load_object(model_of(name))
             if not parts:
                 print(f"[{i + 1}/{len(names)}] {name}: no mesh, skipped", flush=True)
-                continue
+                return
             mesh = object_mesh(parts)
             views = plan_cameras(random.Random(name), radius)
             for c in views if args.render_plan else views[:1]:
@@ -338,9 +354,6 @@ def main() -> None:
                 "caption": "yaw = rel_yaw (target yaw - hero yaw, [0, 360)), pitch = the target camera's own pitch",
                 "size": [W, H], "radius": radius, "rendered": "all" if args.render_plan else "hero",
                 "views": views}, indent=1) + "\n")
-        dt = time.monotonic() - t0
-        print(f"[{i + 1}/{len(names)}] {name}: {dt:.1f} s", flush=True)
-    print(f"done {len(names)} objects in {time.monotonic() - t_all:.0f} s", flush=True)
 
 
 main()
