@@ -33,6 +33,7 @@ from giro import path as campath
 from giro.comfy import server
 from giro.comfy.client import ComfyClient, Done
 from gso_dataset import caption
+from parts import PartView, gate, sam_labels
 from texture_common import (fingerprint, project, qwen_edit_workflow, render_points, sample, samples, slope_slack,
                             view_lora_workflow, zbuffer)
 
@@ -60,6 +61,10 @@ ap.add_argument("--lora-min-iou", type=float, default=0.8,
                      "sometimes turns the view (Oct 6, scooter), and a turned edit painted back doubles the subject")
 ap.add_argument("--lora-tries", type=int, default=3, help="with --lora: seeds per view until one passes --lora-min-iou")
 ap.add_argument("--lora-ref", type=Path, help="with --lora: the hero as the LoRA saw it (lora_anchors.py's hero_ref.png)")
+ap.add_argument("--parts", default="", help="part-aware paint-back (parts.py): SAM labels each edit with these prompts (the "
+                "same list as project_texture.py --parts, whose sample labels the texture carries) and an edit pixel "
+                "paints only samples of its own part")
+ap.add_argument("--part-edge-px", type=float, default=3.0, help="with --parts: edit pixels this close to a part boundary fade out")
 args = ap.parse_args()
 attempt, work = args.attempt.resolve(), args.work.resolve()
 dev = torch.device(f"cuda:{args.gpu}")
@@ -69,6 +74,14 @@ saved = torch.load(args.texture)
 xyz, nrm, _, _ = samples(work, saved["points"], dev)
 assert abs(saved["fingerprint"] - fingerprint(xyz)) < 1e-3, f"{args.texture} was painted on other samples"
 rgb = saved["rgb"].to(dev).float()
+# Which edit painted each sample: 2000 + its number here (patch_region.py uses 1000 + n), so the
+# source-view map covers this layer too.
+winner = saved["winner"].to(dev)
+parts = [p.strip() for p in args.parts.split(",") if p.strip()]
+sample_parts = None
+if parts:
+    assert saved.get("parts") == parts, f"{args.texture} carries part labels for {saved.get('parts')}, not {parts}"
+    sample_parts = saved["labels"].to(dev).long()
 cams_json = json.loads((work / "attempt" / "cameras.json").read_text())
 W, H = cams_json["width"], cams_json["height"]
 hero = campath.PathCamera.from_json(json.loads((work / "texture.json").read_text())["fits"]["hero"]["camera"])
@@ -148,7 +161,7 @@ order = sorted(range(0, len(all_cams), args.every), key=lambda i: angle_from_her
 async def paint_view(comfy: ComfyClient, ref: str, i: int, whole: bool, better: float, report: list) -> None:
     """Edit camera i's render (whole, or masked to what it sees better than `better` times the locked
     quality) and paint the edit back there by overwriting; lock what it painted."""
-    global rgb, locked
+    global rgb, locked, winner
     cam = all_cams[i]
     front, u, v, q = view(cam, W, H)
     need = front & (q > better * locked)
@@ -202,9 +215,14 @@ async def paint_view(comfy: ComfyClient, ref: str, i: int, whole: bool, better: 
     # Overwrite, feathered only at the regenerated region's edge; lock what the edit painted.
     alpha = np.clip(ndimage.gaussian_filter(regen.astype(np.float32), 1.5), 0, 1) * regen
     a = sample(torch.from_numpy(alpha).to(dev)[None], u, v, W, H)[:, 0] * need
+    if sample_parts is not None:  # the edit's own parts (SAM on it): its rim pixels never land on tire samples
+        path = out / (f"{k:02d}-edit-{best}.png" if whole else f"{k:02d}-edit.png")
+        lab = (await sam_labels(comfy, {"edit": path}, parts, out / "parts-raw" / f"{k:02d}"))["edit"]
+        a = a * gate(sample_parts, *PartView(lab, args.part_edge_px, dev, (W, H)).at(u, v))
     new = sample(torch.from_numpy(edit).permute(2, 0, 1).to(dev), u, v, W, H)
     rgb = rgb * (1 - a[:, None]) + new * a[:, None]
     locked = torch.where(a > 0.5, q, locked)
+    winner = torch.where(a > 0.5, torch.full_like(winner, 2000 + k), winner)
     after, _ = render_points(xyz, rgb, cam, W, H, nrm=nrm)
     tile = np.concatenate([img, np.repeat(regen[..., None], 3, -1).astype(np.float32), edit * mask[..., None], np.clip(after, 0, 1)], 1)
     Image.fromarray((tile * 255).astype(np.uint8)).resize((W, H // 4)).save(out / f"{k:02d}-sheet.jpg", quality=88)
@@ -228,8 +246,9 @@ async def main() -> None:
                     await paint_view(comfy, ref, i, False, args.better, report)
             finally:
                 await comfy.free()
-    torch.save({"rgb": rgb.half().cpu(), "winner": saved["winner"], "points": saved["points"], "fingerprint": saved["fingerprint"],
-                "patches": saved.get("patches", []) + [{"progressive": report, "subject": args.subject}]}, args.save)
+    torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": saved["points"], "fingerprint": saved["fingerprint"],
+                "patches": saved.get("patches", []) + [{"progressive": report, "subject": args.subject}]}
+               | {k: saved[k] for k in ("labels", "parts") if k in saved}, args.save)
     (out / "progressive.json").write_text(json.dumps(report, indent=1))
 
 asyncio.run(main())

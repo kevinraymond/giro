@@ -40,6 +40,7 @@ from scipy import ndimage, optimize
 from giro import path as campath
 from giro.stages.fallback import _qvec
 from giro.stages.proxy import Points, fit_hero_camera, iou
+from parts import PartView, gate, vote
 from texture_common import Source, anchor_mask, fingerprint, load_cameras, render_points, samples, smooth_field
 
 ap = argparse.ArgumentParser()
@@ -74,6 +75,9 @@ ap.add_argument("--exposure", choices=["match", "off"], default="match",
 ap.add_argument("--mesh-fallback", default="", metavar="LO,HI",
                 help="where the views disagree (the w-weighted spread of their colors, before view selection) more than "
                      "LO, blend toward the mesh's own colors, fully at HI (e.g. 0.08,0.16; empty: off)")
+ap.add_argument("--parts", type=Path, help="part_masks.py's label images (WORK/parts): part-aware painting (parts.py), "
+                "a sample takes paint only from pixels of its own part (the scooter's rim spilled onto its tire, #3720)")
+ap.add_argument("--part-edge-px", type=float, default=3.0, help="with --parts: pixels this close to a part boundary fade out")
 ap.add_argument("--supersample", type=int, default=2,
                 help="render the frames this many times larger and shrink them: antialiased edges, and soft masks "
                      "(coverage) to train with dataset.mask_erode_px=0 (Oct 5, tank: cleaner silhouettes; 1: hard edges)")
@@ -158,15 +162,30 @@ PAINT_TOL = args.paint_tol
 RENDER_TOL = 0.005
 warps = torch.load(args.warps) if args.warps else {}
 cols, weights = [], []
+part_px: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}  # source index -> (pixel label, boundary fade) per sample
 for name, img, mask, cam, boost in sources:
     ex = args.exclude / f"{name}.png" if args.exclude else None
     if ex is not None and ex.exists():
         mask = mask & ~(np.asarray(Image.open(ex)) > 127)
-    rgb, wt = Source(name, img, mask, cam, boost, dev, FEATHER_PX, warps.get(name)).paint(xyz, nrm, PAINT_TOL)
+    src = Source(name, img, mask, cam, boost, dev, FEATHER_PX, warps.get(name))
+    rgb, wt = src.paint(xyz, nrm, PAINT_TOL)
+    pv = PartView.load(args.parts, name, args.part_edge_px, dev, img.size) if args.parts else None
+    if pv is not None:
+        part_px[len(weights)] = pv.at(*src.warped(*src.visible(xyz, nrm, PAINT_TOL)[:2]))
     cols.append(rgb.half() if args.views else rgb)
     weights.append(wt)
     if not args.views:
         print(f"{name}: paints {(wt > 0).float().mean():.1%} of the surface", flush=True)
+sample_parts = None
+if args.parts:  # part-aware painting (parts.py): a sample takes paint only from pixels of its own part
+    part_names = json.loads((args.parts / "parts.json").read_text())["parts"]
+    sample_parts = vote(xyz, [(lab, weights[i] * edge) for i, (lab, edge) in part_px.items()], len(part_names))
+    for i, (lab, edge) in part_px.items():
+        weights[i] = weights[i] * gate(sample_parts, lab, edge)
+    report["parts"] = {"names": part_names, "labeled_views": len(part_px),
+                       "share": {n: round(float((sample_parts == k).float().mean()), 4) for k, n in enumerate(["none"] + part_names)},
+                       "unlabeled": round(float((sample_parts < 0).float().mean()), 4)}
+    print(f"parts: {report['parts']}", flush=True)
 
 if not (args.views or args.texture):  # anchors only: rendered views already agree in exposure, and n^2 is slow for ~100
     # Exposure: each anchor matched to the hero (or to the blend of the views already matched).
@@ -264,7 +283,8 @@ if args.texture:
     painted = winner >= 0
     winner = torch.where(painted, 0, -1)  # the coverage sheet shows painted vs not (the sources are gone)
 if args.save_texture:
-    torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": n_points, "fingerprint": fingerprint(xyz)},
+    torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": n_points, "fingerprint": fingerprint(xyz)}
+               | ({"labels": sample_parts.to(torch.int8).cpu(), "parts": part_names} if sample_parts is not None else {}),
                args.save_texture)
 report["painted"] = round(float(painted.float().mean()), 4)
 print(f"painted {painted.float().mean():.1%} of the surface; the rest keeps the mesh's colors", flush=True)

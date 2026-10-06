@@ -54,6 +54,9 @@ ap.add_argument("--no-progressive", action="store_true", help="skip progressive 
 ap.add_argument("--progressive-lora", default="", metavar="LORA",
                 help="progressive painting with the GSO view LoRA (progressive_paint.py --lora; needs --lora-ref)")
 ap.add_argument("--lora-ref", type=Path, help="the hero as the view LoRA saw it (lora_anchors.py's hero_ref.png)")
+ap.add_argument("--parts", default="", metavar="PROMPTS",
+                help="part-aware painting (parts.py), e.g. 'tire,wheel rim': SAM labels the views (part_masks.py) and "
+                     "a pixel paints only surface of its own part, in the texture and the progressive pass (#3720)")
 ap.add_argument("--max-splats", type=int, default=300_000)
 ap.add_argument("--library", help="also make a library job with this name")
 ap.add_argument("--image", type=Path, help="the job's source image, for the library (default: the hero)")
@@ -130,9 +133,14 @@ if not (work / "warps.pt").exists():
 save()
 
 print("5. texture", flush=True)
+part_args = []
+if args.parts:
+    if not (work / "parts" / "parts.json").exists():
+        run("part_masks.py", str(attempt), str(angles), str(work), g, "--parts", args.parts)
+    part_args = ["--parts", str(work / "parts")]
 run("project_texture.py", str(attempt), str(angles), str(work), g, "--skip", S2, "--cameras", str(work / "anchor_cameras.json"),
     "--warps", str(work / "warps.pt"), "--select-power", "6", "--exposure", args.exposure, "--save-texture", str(work / "texture-0.pt"),
-    "--out", "scratch")
+    "--out", "scratch", *part_args)
 tex = work / "texture-0.pt"
 for k, spec in enumerate(args.patch, 1):
     find, prompt, yaw, pitch, *pick = spec.split("::")
@@ -151,7 +159,8 @@ if fill:
 if not args.no_progressive:
     nxt = work / "texture-prog.pt"
     run("progressive_paint.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--subject", args.subject,
-        *(["--lora", args.progressive_lora, "--lora-ref", str(args.lora_ref.resolve())] if args.progressive_lora else []))
+        *(["--lora", args.progressive_lora, "--lora-ref", str(args.lora_ref.resolve())] if args.progressive_lora else []),
+        *(["--parts", args.parts] if args.parts else []))
     tex = nxt
 if args.patch or fill or not args.no_progressive:
     comfy_down()
@@ -161,6 +170,7 @@ route["patches"] = args.patch
 route["fill"] = args.subject if fill else None
 route["progressive"] = not args.no_progressive
 route["exposure"] = args.exposure
+route["parts"] = args.parts or None
 save()
 
 print("6. training", flush=True)

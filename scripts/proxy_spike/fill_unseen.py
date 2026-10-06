@@ -131,7 +131,8 @@ async def main() -> None:
             finally:
                 await comfy.free()
     torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": saved["points"], "fingerprint": saved["fingerprint"],
-                "patches": saved.get("patches", []) + [{"fill": report, "subject": args.subject}]}, args.save)
+                "patches": saved.get("patches", []) + [{"fill": report, "subject": args.subject}]}
+               | {k: saved[k] for k in ("labels", "parts") if k in saved}, args.save)
     (out / "fill.json").write_text(json.dumps(report, indent=1))
 
 asyncio.run(main())

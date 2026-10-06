@@ -145,7 +145,8 @@ async def main() -> None:
     patches = saved.get("patches", []) + [{"find": args.find, "prompt": args.prompt, "camera": close.to_json(),
                                           "samples": int((a > 0.5).sum())}]
     torch.save({"rgb": rgb.half().cpu(), "winner": winner.cpu(), "points": saved["points"],
-                "fingerprint": saved["fingerprint"], "patches": patches}, args.save)
+                "fingerprint": saved["fingerprint"], "patches": patches}
+               | {k: saved[k] for k in ("labels", "parts") if k in saved}, args.save)  # part labels ride along
     after, _ = render_points(xyz, rgb, close, S, S, nrm=nrm)
     sheet = Image.new("RGB", (3 * S, S))
     for k, im in enumerate([before, edited, Image.fromarray((np.clip(after, 0, 1) * 255).astype(np.uint8))]):
