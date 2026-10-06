@@ -51,6 +51,9 @@ ap.add_argument("--exposure", choices=["match", "off"], default="match",
                 help="project_texture.py --exposure: off for reflective subjects (Oct 5, knight: the matched gains "
                      "hit their clamp and darkened the rear)")
 ap.add_argument("--no-progressive", action="store_true", help="skip progressive painting (progressive_paint.py)")
+ap.add_argument("--progressive-lora", default="", metavar="LORA",
+                help="progressive painting with the GSO view LoRA (progressive_paint.py --lora; needs --lora-ref)")
+ap.add_argument("--lora-ref", type=Path, help="the hero as the view LoRA saw it (lora_anchors.py's hero_ref.png)")
 ap.add_argument("--max-splats", type=int, default=300_000)
 ap.add_argument("--library", help="also make a library job with this name")
 ap.add_argument("--image", type=Path, help="the job's source image, for the library (default: the hero)")
@@ -147,7 +150,8 @@ if fill:
     tex = nxt
 if not args.no_progressive:
     nxt = work / "texture-prog.pt"
-    run("progressive_paint.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--subject", args.subject)
+    run("progressive_paint.py", str(attempt), str(work), g, "--texture", str(tex), "--save", str(nxt), "--subject", args.subject,
+        *(["--lora", args.progressive_lora, "--lora-ref", str(args.lora_ref.resolve())] if args.progressive_lora else []))
     tex = nxt
 if args.patch or fill or not args.no_progressive:
     comfy_down()

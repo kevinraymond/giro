@@ -91,50 +91,10 @@ def pairs() -> list[dict]:
 
 
 def workflow(c1: str, c2: str, prompt: str, lora: str | None, seed: int, c3: str | None = None) -> dict:
-    model = ["shift", 0] if args.no_cfgnorm else ["cfgnorm", 0]
-    wf = {
-        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": args.unet, "weight_dtype": "default"}},
-        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
-        "vae": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
-        "shift": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["unet", 0], "shift": 3.1}},
-        "cfgnorm": {"class_type": "CFGNorm", "inputs": {"model": ["shift", 0], "strength": 1.0}},
-        "img1": {"class_type": "LoadImage", "inputs": {"image": c1, "upload": "image"}},
-        "img2": {"class_type": "LoadImage", "inputs": {"image": c2, "upload": "image"}},
-        "latent": {"class_type": "VAEEncode", "inputs": {"pixels": ["img1", 0], "vae": ["vae", 0]}},
-        "pos": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["img1", 0],
-                "image2": ["img2", 0], "prompt": prompt}},
-        "posr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["pos", 0], "reference_latents_method": args.ref_method}},
-        "neg": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["img1", 0],
-                "image2": ["img2", 0], "prompt": ""}},
-        "negr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["neg", 0], "reference_latents_method": args.ref_method}},
-        "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
-        "save": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": "giro/gso_eval"}},
-    }
-    refs = {"image1": ["img1", 0], "image2": ["img2", 0]}
-    if c3:
-        wf["img3"] = {"class_type": "LoadImage", "inputs": {"image": c3, "upload": "image"}}
-        refs["image3"] = ["img3", 0]
-    if args.gen_size:
-        gw, gh = map(int, args.gen_size.split("x"))
-        for key in [k for k in ("img1", "img3") if k in wf]:
-            wf[key + "s"] = {"class_type": "ImageScale", "inputs": {"image": [key, 0], "upscale_method": "lanczos",
-                             "width": gw, "height": gh, "crop": "disabled"}}
-            refs["image" + key[-1]] = [key + "s", 0]
-        wf["latent"]["inputs"]["pixels"] = refs["image1"]
-    for key in ("pos", "neg"):
-        wf[key]["inputs"].update(refs)
-    steps, cfg = args.steps, args.cfg
-    if args.lightning:
-        wf["lightning"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": model, "strength_model": 1.0,
-                           "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"}}
-        model, steps, cfg = ["lightning", 0], 4, 1.0
-    if lora:
-        wf["lora"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": model, "strength_model": 1.0, "lora_name": lora}}
-        model = ["lora", 0]
-    wf["sample"] = {"class_type": "KSampler", "inputs": {"model": model, "positive": ["posr", 0], "negative": ["negr", 0],
-                    "latent_image": ["latent", 0], "seed": seed, "steps": steps, "cfg": cfg, "sampler_name": "euler",
-                    "scheduler": "simple", "denoise": 1.0}}
-    return wf
+    from texture_common import view_lora_workflow
+
+    return view_lora_workflow(c1, c2, prompt, lora, seed, c3, lightning=args.lightning, steps=args.steps, cfg=args.cfg,
+                              unet=args.unet, ref_method=args.ref_method, cfgnorm=not args.no_cfgnorm, gen_size=args.gen_size)
 
 
 async def gen() -> None:

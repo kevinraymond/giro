@@ -321,3 +321,58 @@ def qwen_edit_workflow(image: str, prompt: str, seed: int = 1, prefix: str = "gi
         }
         wf["sample"]["inputs"]["latent_image"] = ["noise_mask", 0]
     return wf
+
+
+LIGHTNING = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+
+
+def view_lora_workflow(c1: str, c2: str, prompt: str, lora: str | None, seed: int, c3: str | None = None, *,
+                       lightning: bool = False, steps: int = 25, cfg: float = 3.0,
+                       unet: str = "qwen_image_edit_2511_int8_convrot.safetensors", ref_method: str = "index_timestep_zero",
+                       cfgnorm: bool = True, gen_size: str = "", prefix: str = "giro/gso_eval") -> dict:
+    """The view LoRA's graph (board #3699), as trained and scored (gso_eval.py): image 1 = the proxy render at
+    the target camera on black, image 2 = the hero, image 3 (v2) = the nearest accepted view; the prompt is
+    gso_dataset.caption(rel_yaw, pitch). Full denoise from image 1's latent; `lightning`: 4 steps, cfg 1, with
+    the LoRA stacked on Lightning (the route's setting, scored best for v1 at step 750)."""
+    model = ["cfgnorm", 0] if cfgnorm else ["shift", 0]
+    wf = {
+        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
+        "vae": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
+        "shift": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["unet", 0], "shift": 3.1}},
+        "cfgnorm": {"class_type": "CFGNorm", "inputs": {"model": ["shift", 0], "strength": 1.0}},
+        "img1": {"class_type": "LoadImage", "inputs": {"image": c1, "upload": "image"}},
+        "img2": {"class_type": "LoadImage", "inputs": {"image": c2, "upload": "image"}},
+        "latent": {"class_type": "VAEEncode", "inputs": {"pixels": ["img1", 0], "vae": ["vae", 0]}},
+        "pos": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["img1", 0],
+                "image2": ["img2", 0], "prompt": prompt}},
+        "posr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["pos", 0], "reference_latents_method": ref_method}},
+        "neg": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "image1": ["img1", 0],
+                "image2": ["img2", 0], "prompt": ""}},
+        "negr": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"conditioning": ["neg", 0], "reference_latents_method": ref_method}},
+        "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
+        "save": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": prefix}},
+    }
+    refs = {"image1": ["img1", 0], "image2": ["img2", 0]}
+    if c3:
+        wf["img3"] = {"class_type": "LoadImage", "inputs": {"image": c3, "upload": "image"}}
+        refs["image3"] = ["img3", 0]
+    if gen_size:
+        gw, gh = map(int, gen_size.split("x"))
+        for key in [k for k in ("img1", "img3") if k in wf]:
+            wf[key + "s"] = {"class_type": "ImageScale", "inputs": {"image": [key, 0], "upscale_method": "lanczos",
+                             "width": gw, "height": gh, "crop": "disabled"}}
+            refs["image" + key[-1]] = [key + "s", 0]
+        wf["latent"]["inputs"]["pixels"] = refs["image1"]
+    for key in ("pos", "neg"):
+        wf[key]["inputs"].update(refs)
+    if lightning:
+        wf["lightning"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": model, "strength_model": 1.0, "lora_name": LIGHTNING}}
+        model, steps, cfg = ["lightning", 0], 4, 1.0
+    if lora:
+        wf["lora"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": model, "strength_model": 1.0, "lora_name": lora}}
+        model = ["lora", 0]
+    wf["sample"] = {"class_type": "KSampler", "inputs": {"model": model, "positive": ["posr", 0], "negative": ["negr", 0],
+                    "latent_image": ["latent", 0], "seed": seed, "steps": steps, "cfg": cfg, "sampler_name": "euler",
+                    "scheduler": "simple", "denoise": 1.0}}
+    return wf

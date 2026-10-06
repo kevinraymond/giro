@@ -32,7 +32,9 @@ from scipy import ndimage
 from giro import path as campath
 from giro.comfy import server
 from giro.comfy.client import ComfyClient, Done
-from texture_common import fingerprint, project, qwen_edit_workflow, render_points, sample, samples, slope_slack, zbuffer
+from gso_dataset import caption
+from texture_common import (fingerprint, project, qwen_edit_workflow, render_points, sample, samples, slope_slack,
+                            view_lora_workflow, zbuffer)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("attempt", type=Path)
@@ -50,6 +52,14 @@ ap.add_argument("--best-of", type=int, default=3, help="key views: this many edi
 ap.add_argument("--hero-lock", type=float, default=1.0, help="the hero's surface starts locked with this times its quality")
 ap.add_argument("--out-dir", default="progressive")
 ap.add_argument("--seed", type=int, default=1)
+ap.add_argument("--lora", default="", help="regenerate with the GSO view LoRA (a loras/ path, e.g. qwen/gso-view-v1-750.safetensors) "
+                "instead of plain 2511 edits: the render as image 1, --lora-ref as image 2, the camera as the caption; "
+                "full denoise with Lightning, as scored (board #3719); the edit is still painted only where this view is better")
+ap.add_argument("--lora-min-iou", type=float, default=0.8,
+                help="with --lora: paint an edit only if its silhouette (off black) matches the render's this well; the LoRA "
+                     "sometimes turns the view (Oct 6, scooter), and a turned edit painted back doubles the subject")
+ap.add_argument("--lora-tries", type=int, default=3, help="with --lora: seeds per view until one passes --lora-min-iou")
+ap.add_argument("--lora-ref", type=Path, help="with --lora: the hero as the LoRA saw it (lora_anchors.py's hero_ref.png)")
 args = ap.parse_args()
 attempt, work = args.attempt.resolve(), args.work.resolve()
 dev = torch.device(f"cuda:{args.gpu}")
@@ -157,9 +167,14 @@ async def paint_view(comfy: ComfyClient, ref: str, i: int, whole: bool, better: 
         Image.fromarray(edit_mask.astype(np.uint8) * 255).convert("RGB").save(out / f"{k:02d}-mask.png")
         mask_up = await comfy.upload_image(out / f"{k:02d}-mask.png")
     tries = []
-    for t in range(args.best_of if whole else 1):
+    n_tries = max(args.best_of if whole else 1, args.lora_tries if args.lora else 1)
+    for t in range(n_tries):
         done = None
-        wf = qwen_edit_workflow(image, prompt(cam), args.seed + 100 * t + k, "giro/progressive", mask=mask_up, ref=ref, denoise=args.denoise)
+        if args.lora:  # whole-image generation; only the regenerated region is painted back below
+            wf = view_lora_workflow(image, ref, caption(cam.yaw - hero.yaw, cam.pitch), args.lora, args.seed + 100 * t + k,
+                                    lightning=True, prefix="giro/progressive")
+        else:
+            wf = qwen_edit_workflow(image, prompt(cam), args.seed + 100 * t + k, "giro/progressive", mask=mask_up, ref=ref, denoise=args.denoise)
         async for ev in comfy.run(wf):
             if isinstance(ev, Done):
                 done = ev
@@ -167,8 +182,22 @@ async def paint_view(comfy: ComfyClient, ref: str, i: int, whole: bool, better: 
         dst = out / (f"{k:02d}-edit.png" if not whole else f"{k:02d}-edit-{t}.png")
         await comfy.download(done.outputs["save"]["images"][0], dst)
         e = np.asarray(Image.open(dst).convert("RGB").resize((W, H), Image.LANCZOS), np.float32) / 255
+        if args.lora:  # (score, silhouette IoU, edge F1): only edits that keep the view count
+            sil = ndimage.binary_fill_holes(ndimage.binary_opening(e.max(-1) > 0.01, iterations=2))
+            iou = float((sil & mask).sum() / max((sil | mask).sum(), 1))
+            ok = iou >= args.lora_min_iou
+            sc = agreement(e, img, mask)
+            tries.append(((sc[0] if ok else -9.0, iou, sc[1]), e))
+            if ok and not whole:
+                break
+            continue
         tries.append((agreement(e, img, mask) if whole else (0.0, 0.0, 0.0), e))
     best = max(range(len(tries)), key=lambda t: tries[t][0][0])
+    if args.lora and tries[best][0][0] <= -9.0:
+        print(f"{'key' if whole else 'view'}: camera {i} (yaw {cam.yaw - hero.yaw:+.0f}, pitch {cam.pitch:.0f}) skipped: "
+              f"no edit kept the view (silhouette IoU {[round(sc[1], 2) for sc, _ in tries]})", flush=True)
+        report.append({"camera": i, "whole": whole, "skipped": True, "tries": [[round(x, 3) for x in sc] for sc, _ in tries]})
+        return
     edit = tries[best][1]
     # Overwrite, feathered only at the regenerated region's edge; lock what the edit painted.
     alpha = np.clip(ndimage.gaussian_filter(regen.astype(np.float32), 1.5), 0, 1) * regen
@@ -181,7 +210,7 @@ async def paint_view(comfy: ComfyClient, ref: str, i: int, whole: bool, better: 
     Image.fromarray((tile * 255).astype(np.uint8)).resize((W, H // 4)).save(out / f"{k:02d}-sheet.jpg", quality=88)
     report.append({"camera": i, "whole": whole, "yaw": round(cam.yaw - hero.yaw, 1), "pitch": cam.pitch,
                    "regen_px": int(regen.sum()), "painted": int((a > 0.5).sum()), "pick": best,
-                   "tries": [[round(x, 3) for x in sc] for sc, _ in tries] if whole else None})
+                   "tries": [[round(x, 3) for x in sc] for sc, _ in tries] if whole or args.lora else None})
     print(f"{'key' if whole else 'view'} {k + 1}: camera {i} (yaw {cam.yaw - hero.yaw:+.0f}, pitch {cam.pitch:.0f}) "
           f"regenerates {int(regen.sum()):,} px, paints {int((a > 0.5).sum()):,} samples"
           + (f"; tries (score, edge F1, p98 color) {[[round(x, 3) for x in sc] for sc, _ in tries]}, picked {best}" if whole else ""), flush=True)
@@ -192,7 +221,7 @@ async def main() -> None:
     with await asyncio.to_thread(server.Lease, args.gpu) as lease:
         async with ComfyClient(lease.url) as comfy:
             try:
-                ref = await comfy.upload_image(attempt / "hero" / "hero.png")
+                ref = await comfy.upload_image(args.lora_ref if args.lora else attempt / "hero" / "hero.png")
                 for i in keys:
                     await paint_view(comfy, ref, i, True, 1.0, report)
                 for i in order:
