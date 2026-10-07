@@ -41,12 +41,14 @@ SS = 2
 RINGS = [(-20, 24), (0, 48), (20, 48), (40, 36), (60, 24), (80, 8)]  # project_texture.py's
 BASE_WEIGHT = 0.02  # gso_controls.py's: Pixal3D's own color where the hero's weight fades out
 ap = argparse.ArgumentParser()
-ap.add_argument("step", choices=["prep", "lora", "eval"])
+ap.add_argument("step", choices=["prep", "lora", "joint", "lowres", "eval"])
 ap.add_argument("name")
 ap.add_argument("out", type=Path)
 ap.add_argument("gpu", type=int)
 ap.add_argument("--lora", default="qwen/gso-view-v1-750.safetensors")
 ap.add_argument("--runs", default="T,T0,G,P", help="eval: run dirs under OUT/NAME, in sheet order")
+ap.add_argument("--tag", default="joint", help="joint: the views go to OUT/NAME/angles-<tag>")
+ap.add_argument("--no-lightning", action="store_true", help="joint: 25 steps, cfg 3 instead of Lightning's 4")
 args = ap.parse_args()
 dev = torch.device(f"cuda:{args.gpu}")
 torch.cuda.set_device(dev)
@@ -188,6 +190,67 @@ elif args.step == "lora":
                     await comfy.free()
 
     asyncio.run(generate())
+
+elif args.step == "joint":
+    # The joint LoRA (board #3735): the 16 training cameras as 4 groups of 4 neighbors (joint_dataset.py's
+    # grouping and caption), each group one 2x2 grid of image 1s (from the lora step's renders) -> one pass ->
+    # the 4 panels cut out at 384x512. Needs `lora` run first (angles-lora/input).
+    from joint_dataset import caption as joint_caption
+    from joint_dataset import groups_of_four
+    import random as _random
+
+    adir = out / f"angles-{args.tag}"
+    gdir = adir / "grids"
+    gdir.mkdir(parents=True, exist_ok=True)
+    pw, ph = W // 2, H // 2
+    views_g = [{"id": v["name"], "yaw": v["rel_yaw"], "pitch": v["pitch"]} for v in train]
+    groups = groups_of_four(views_g, _random.Random(0))
+
+    async def generate_joint() -> None:
+        from giro.comfy import server
+        from giro.comfy.client import ComfyClient, Done
+
+        with await asyncio.to_thread(server.Lease, args.gpu) as lease:
+            async with ComfyClient(lease.url) as comfy:
+                try:
+                    ref = await comfy.upload_image(out / "hero_ref.png", subfolder="giro/truth_test")
+                    for gi, g in enumerate(groups):
+                        grid_in = Image.new("RGB", (W, H))
+                        for i, v in enumerate(g):
+                            im = Image.open(out / "angles-lora" / "input" / f"{v['id']}.png").convert("RGB").resize((pw, ph), Image.LANCZOS)
+                            grid_in.paste(im, ((i % 2) * pw, (i // 2) * ph))
+                        grid_in.save(gdir / f"g{gi}-input.png")
+                        c1 = await comfy.upload_image(gdir / f"g{gi}-input.png", subfolder="giro/truth_test_in")
+                        wf = view_lora_workflow(c1, ref, joint_caption([(v["yaw"], v["pitch"]) for v in g]), args.lora, 11 + gi,
+                                                lightning=not args.no_lightning, prefix="giro/truth_joint")
+                        done = None
+                        async for ev in comfy.run(wf):
+                            if isinstance(ev, Done):
+                                done = ev
+                        await comfy.download(done.outputs["save"]["images"][0], gdir / f"g{gi}.png")
+                        grid_out = Image.open(gdir / f"g{gi}.png").convert("RGB").resize((W, H), Image.LANCZOS)
+                        ious = []
+                        for i, v in enumerate(g):
+                            panel = np.asarray(grid_out.crop(((i % 2) * pw, (i // 2) * ph, (i % 2 + 1) * pw, (i // 2 + 1) * ph)))
+                            sil = ndimage.binary_fill_holes(ndimage.binary_opening(panel.max(-1) > 3, iterations=2))
+                            target = np.asarray(Image.open(out / "angles-lora" / "input" / f"{v['id']}_mask.png").resize((pw, ph))) > 127
+                            ious.append(round(float((sil & target).sum() / max((sil | target).sum(), 1)), 3))
+                            save_view(adir, v["id"], (panel * sil[..., None]).astype(np.uint8), sil)
+                        print(f"group {gi} {[v['id'] for v in g]}: panel IoU {ious}", flush=True)
+                finally:
+                    await comfy.free()
+
+    asyncio.run(generate_joint())
+
+elif args.step == "lowres":
+    # The true and the one-by-one LoRA views at the joint panels' 384x512, so all three train at one resolution.
+    for src_tag in ("true", "lora"):
+        sdir, ddir = out / f"angles-{src_tag}", out / f"angles-{src_tag}384"
+        for v in train:
+            n = v["name"]
+            img = Image.open(sdir / f"{n}.png").convert("RGB").resize((W // 2, H // 2), Image.LANCZOS)
+            m = Image.open(sdir / "raw" / "subject" / "anchors" / f"{n}.png").convert("L").resize((W // 2, H // 2), Image.BILINEAR)
+            save_view(ddir, n, np.asarray(img), np.asarray(m) > 127)
 
 else:  # eval
     import lpips
