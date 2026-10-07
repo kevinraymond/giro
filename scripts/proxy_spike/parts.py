@@ -61,7 +61,8 @@ def edge_weight(lab: np.ndarray, px: float) -> np.ndarray:
     return np.clip(d / max(px, 1e-6), EDGE_FLOOR, 1).astype(np.float32)
 
 
-async def sam_labels(comfy, paths: dict[str, Path], parts: list[str], raw: Path) -> dict[str, np.ndarray]:
+async def sam_labels(comfy, paths: dict[str, Path], parts: list[str], raw: Path,
+                     threshold: float | None = None) -> dict[str, np.ndarray]:
     """SAM 3.1 per part prompt over the images (grouped by size, as sam_workflow wants); returns the
     label image per name, at each image's own size."""
     groups: dict[tuple[int, int], list[tuple[str, Path]]] = {}
@@ -69,7 +70,7 @@ async def sam_labels(comfy, paths: dict[str, Path], parts: list[str], raw: Path)
         groups.setdefault(Image.open(p).size, []).append((name, p))
     found: dict[str, list[np.ndarray]] = {n: [] for n in paths}
     for part in parts:
-        params = Masks.defaults | {"subject_prompt": part, "background_prompt": ""}
+        params = Masks.defaults | {"subject_prompt": part, "background_prompt": ""} | ({"threshold": threshold} if threshold else {})
         pdir = raw / slug(part)
         wf_groups = {f"g{i}": [p for _, p in items] for i, items in enumerate(groups.values())}
         async for _ in comfy.run(sam_workflow(wf_groups, pdir, params)):

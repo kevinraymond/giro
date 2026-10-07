@@ -22,6 +22,8 @@ ap.add_argument("anchor_dir", type=Path)
 ap.add_argument("work", type=Path)
 ap.add_argument("gpu", type=int)
 ap.add_argument("--parts", required=True, help="SAM prompts, comma separated; a later part overrides an earlier one")
+ap.add_argument("--threshold", type=float, help="SAM detection score threshold (default: the masks stage's 0.5); lower finds "
+                "half-hidden instances (a scooter's rear wheel)")
 args = ap.parse_args()
 parts = [p.strip() for p in args.parts.split(",") if p.strip()]
 adir, out = args.anchor_dir.resolve(), args.work.resolve() / "parts"
@@ -34,7 +36,7 @@ async def main() -> None:
     with await asyncio.to_thread(server.Lease, args.gpu) as lease:
         async with ComfyClient(lease.url) as comfy:
             try:
-                labels = await sam_labels(comfy, paths, parts, out / "raw")
+                labels = await sam_labels(comfy, paths, parts, out / "raw", args.threshold)
             finally:
                 await comfy.free()
     save_labels(out, parts, labels)
