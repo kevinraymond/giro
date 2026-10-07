@@ -63,6 +63,9 @@ ap.add_argument("--sil", type=float, default=0.5, help="weight of an anchor's ba
 ap.add_argument("--hero-weight", type=float, default=2.0, help="the hero's boost in the ownership (project_texture's)")
 ap.add_argument("--gen-frac", type=float, default=0.5, help="share of steps on the hero + anchors (rest: renders)")
 ap.add_argument("--bilagrid", action="store_true")
+ap.add_argument("--keys", action="store_true",
+                help="also train on the progressive pass's whole-image key edits (WORK/progressive: the picked edit per "
+                     "key camera, which is one of the renders' cameras; the render's mask), as generated views with grids")
 ap.add_argument("--iters", type=int, default=30_000)
 ap.add_argument("--max-splats", type=int, default=300_000)
 ap.add_argument("--init", type=int, default=150_000, help="Gaussians sampled on the mesh to start")
@@ -163,10 +166,26 @@ for n in sorted(cams):
     anchors.append(View(f"anchor/{n}", "anchor", pix, m.astype(np.float32), np.asarray(rot), np.asarray(t), f, f, w / 2, h / 2))
 log(f"{len(anchors)} anchors: {' '.join(a.name[7:] for a in anchors)}")
 
+# The progressive key edits: Qwen 2511 edits of the textured mesh's render at a render camera (denoise 0.6), so
+# close to the mesh; most of the route's eye-level detail came from them (prog_share 0.61, #3725).
+keys = []
+if args.keys:
+    kdir = work / "progressive"
+    by_name = {v.name: v for v in renders}
+    for k, e in enumerate(json.loads((kdir / "progressive.json").read_text())):
+        r = by_name.get(f"frames/{e['camera']:05d}.png")
+        if not e.get("whole") or e.get("skipped") or r is None:
+            continue
+        img = Image.open(kdir / f"{k:02d}-edit-{e['pick']}.png").convert("RGB").resize((r.w, r.h), Image.LANCZOS)
+        vm, K = r.viewmat.cpu().numpy(), r.K.cpu().numpy()
+        keys.append(View(f"key/{k:02d}", "key", np.asarray(img), r.mask[..., 0].cpu().numpy(), vm[:3, :3], vm[:3, 3],
+                         K[0, 0], K[1, 1], K[0, 2], K[1, 2]))
+    log(f"{len(keys)} key edits")
+
 # Confidence from the mesh: each generated view's weight per surface sample (|cos|^4, z-buffer, mask feather),
 # its share over the views, and the views' total coverage (for the prior).
 xyz, nrm, mesh_rgb, spacing = samples(work, 2_000_000, dev)
-gen = [hero] + anchors
+gen = [hero] + anchors + keys
 W = []
 for v in gen:
     img = Image.fromarray((v.rgb.cpu().numpy() * 255).astype(np.uint8))
@@ -214,13 +233,13 @@ elif args.views == "anchors":
 else:
     gen_views, prior_views = gen, renders
 
-# Bilateral grids (one per anchor; the hero has none): 12 affine coefficients over (brightness 8, rows 16, cols 16).
+# Bilateral grids (one per anchor and key edit; the hero has none): 12 affine coefficients over (brightness 8, rows 16, cols 16).
 grids = None
 if args.bilagrid:
-    for k, v in enumerate(anchors):
+    for k, v in enumerate(anchors + keys):
         v.grid = k
     eye = torch.eye(3, 4, device=dev).reshape(12, 1, 1, 1)
-    grids = torch.nn.Parameter(eye.expand(12, 8, 16, 16).repeat(len(anchors), 1, 1, 1, 1).contiguous())
+    grids = torch.nn.Parameter(eye.expand(12, 8, 16, 16).repeat(len(anchors) + len(keys), 1, 1, 1, 1).contiguous())
 
 
 def apply_grid(rgb: torch.Tensor, alpha: torch.Tensor, k: int) -> torch.Tensor:
