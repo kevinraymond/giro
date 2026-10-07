@@ -31,6 +31,10 @@ dev = [
     "httpx2>=2.13.1",
     "pytest>=9.1.1",
 ]
+direct = [
+    "gsplat>=1.5.3",
+    "lpips>=0.1.4",
+]
 # scripts/evaluate.py: LPIPS and DINOv2 scores (uv run --group eval scripts/evaluate.py ...)
 eval = [
     "lpips",
