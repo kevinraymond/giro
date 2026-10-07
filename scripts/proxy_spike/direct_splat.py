@@ -65,6 +65,7 @@ ap.add_argument("--gen-frac", type=float, default=0.5, help="share of steps on t
 ap.add_argument("--uniform", action="store_true",
                 help="every pixel of the hero and anchors weighted 1 (no ownership): plain photometric 3DGS, for true views")
 ap.add_argument("--bilagrid", action="store_true")
+ap.add_argument("--cameras", type=Path, help="the anchors' cameras (load_cameras format) instead of WORK/anchor_cameras.json")
 ap.add_argument("--keys", action="store_true",
                 help="also train on the progressive pass's whole-image key edits (WORK/progressive: the picked edit per "
                      "key camera, which is one of the renders' cameras; the render's mask), as generated views with grids")
@@ -157,7 +158,7 @@ log(f"{len(renders)} renders, hero {hero.w}x{hero.h}")
 # The anchors the route used, warps baked in (as finetune_anchors.py).
 route = json.loads((work.parent / "route.json").read_text())
 dropped = set(route["anchors"]["silhouette_dropped"]) | set(route["anchors"].get("color_dropped", []))
-cams = load_cameras(work / "anchor_cameras.json")
+cams = load_cameras(args.cameras or work / "anchor_cameras.json")
 warps = torch.load(work / "warps.pt") if (work / "warps.pt").exists() else {}
 anchors = []
 for n in sorted(cams):
