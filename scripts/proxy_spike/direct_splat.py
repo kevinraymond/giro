@@ -62,6 +62,8 @@ ap.add_argument("--off-mesh", type=float, default=0.25, help="confidence of view
 ap.add_argument("--sil", type=float, default=0.5, help="weight of an anchor's background (its silhouette)")
 ap.add_argument("--hero-weight", type=float, default=2.0, help="the hero's boost in the ownership (project_texture's)")
 ap.add_argument("--gen-frac", type=float, default=0.5, help="share of steps on the hero + anchors (rest: renders)")
+ap.add_argument("--uniform", action="store_true",
+                help="every pixel of the hero and anchors weighted 1 (no ownership): plain photometric 3DGS, for true views")
 ap.add_argument("--bilagrid", action="store_true")
 ap.add_argument("--keys", action="store_true",
                 help="also train on the progressive pass's whole-image key edits (WORK/progressive: the picked edit per "
@@ -74,6 +76,9 @@ ap.add_argument("--depth", type=float, default=0.0,
                 help="the mesh as geometry prior: weight of |rendered depth - mesh depth| / mesh depth wherever the mesh "
                      "covers a pixel, every view (B1 without it fit disagreeing views with semi-transparent layers)")
 ap.add_argument("--seed", type=int, default=42)
+ap.add_argument("--no-export", action="store_true",
+                help="write OUT/final.ply only (no attempt, crop -> export or library): for WORK dirs that only mimic a route's "
+                     "(gso_truth_test.py)")
 ap.add_argument("--library", help="also make a library job with this name")
 ap.add_argument("--image", type=Path, help="the job's source image, for the library")
 args = ap.parse_args()
@@ -198,6 +203,8 @@ coverage = (W.sum(0) / 0.5).clamp(0, 1)
 for i, v in enumerate(gen):
     conf, on_mesh = render_points(xyz, own[i][:, None], v.cam, v.w, v.h, 0.012, nrm=nrm)
     conf = torch.from_numpy(np.where(on_mesh[..., None], conf, args.off_mesh)).float().to(dev)
+    if args.uniform:
+        conf = torch.ones_like(conf)
     inside = v.mask > 0.5
     m = v.mask[..., 0].cpu().numpy() > 0.5
     band = torch.from_numpy(ndimage.binary_dilation(m, iterations=4) & ~ndimage.binary_erosion(m, iterations=4)).to(dev)[..., None]
@@ -352,18 +359,19 @@ for step in range(args.iters):
 
 # The splat as Brush writes it (INRIA layout: f_rest channel-major), into an attempt for crop -> export.
 att = out / "attempt"
-if att.exists():
-    shutil.rmtree(att)
-att.mkdir()
-for name in ("frames", "masks", "hero", "poses"):
-    (att / name).symlink_to(base / name)
-shutil.copy(base / "cameras.json", att / "cameras.json")
-shutil.copytree(base / ".stages", att / ".stages")
-for st in ("train", "crop", "canonicalize", "export"):
-    (att / ".stages" / f"{st}.json").unlink(missing_ok=True)
-metrics = json.loads((base / "metrics.json").read_text())
-(att / "metrics.json").write_text(json.dumps({k: v for k, v in metrics.items() if k in ("texture", "dataset")}, indent=1))
-(att / "train").mkdir()
+if not args.no_export:
+    if att.exists():
+        shutil.rmtree(att)
+    att.mkdir()
+    for name in ("frames", "masks", "hero", "poses"):
+        (att / name).symlink_to(base / name)
+    shutil.copy(base / "cameras.json", att / "cameras.json")
+    shutil.copytree(base / ".stages", att / ".stages")
+    for st in ("train", "crop", "canonicalize", "export"):
+        (att / ".stages" / f"{st}.json").unlink(missing_ok=True)
+    metrics = json.loads((base / "metrics.json").read_text())
+    (att / "metrics.json").write_text(json.dumps({k: v for k, v in metrics.items() if k in ("texture", "dataset")}, indent=1))
+    (att / "train").mkdir()
 with torch.no_grad():
     n = len(params["means"])
     fields = (["x", "y", "z", "scale_0", "scale_1", "scale_2", "opacity", "rot_0", "rot_1", "rot_2", "rot_3",
@@ -374,7 +382,7 @@ with torch.no_grad():
     flat = torch.cat(cols, 1).cpu().numpy()
     for i, k in enumerate(fields):
         rec[k] = flat[:, i]
-splat.write_ply(att / "train" / "final.ply", rec)
+splat.write_ply(out / "final.ply" if args.no_export else att / "train" / "final.ply", rec)
 log(f"wrote {n} Gaussians")
 
 # Each anchor (and the hero) next to the splat from its camera, without its grid: what the views became.
@@ -388,15 +396,16 @@ with torch.no_grad():
         pair = torch.cat([gt, pred], 1).cpu().numpy()
         Image.fromarray((pair * 255).astype(np.uint8)).save(out / "diag" / f"pair-{v.name.removesuffix('.png').replace('/', '-')}.jpg", quality=92)
 
-params_cli = []
-for st in ("crop", "canonicalize", "export"):
-    for k, v in json.loads((base / ".stages" / f"{st}.json").read_text())["params"].items():
-        params_cli += ["-p", f"{st}.{k}={json.dumps(v)}"]
-subprocess.run(["uv", "run", "giro", "stages", str(att), "--from", "crop", "--gpu", str(args.gpu), *params_cli], cwd=ROOT, check=True)
+if not args.no_export:
+    params_cli = []
+    for st in ("crop", "canonicalize", "export"):
+        for k, v in json.loads((base / ".stages" / f"{st}.json").read_text())["params"].items():
+            params_cli += ["-p", f"{st}.{k}={json.dumps(v)}"]
+    subprocess.run(["uv", "run", "giro", "stages", str(att), "--from", "crop", "--gpu", str(args.gpu), *params_cli], cwd=ROOT, check=True)
 (out / "direct.json").write_text(json.dumps({"args": {k: str(v) for k, v in vars(args).items()}, "anchors": [a.name for a in anchors],
                                              "n_gaussians": n, "seconds": round(time.monotonic() - t_start)}, indent=1))
-if args.library:
+if args.library and not args.no_export:
     image = args.image.resolve() if args.image else base / "hero" / "hero.png"
     height = json.loads((base / ".stages" / "canonicalize.json").read_text())["params"]["height_m"]
     subprocess.run(["uv", "run", "python", "make_review_jobs.py", args.library, str(image), str(height), f"1={att}"], cwd=HERE, check=True)
-log(f"done: {att}")
+log(f"done: {out / 'final.ply' if args.no_export else att}")
