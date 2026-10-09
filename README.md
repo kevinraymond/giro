@@ -37,7 +37,7 @@ Passing seeds are ranked by held-out PSNR.
 
 There are two ways to make the orbit:
 
-- **The proxy orbit** (the default since Oct 4, 2026; permissively licensed models): Pixal3D
+- **The proxy orbit** (the default; its models are licensed for use everywhere): Pixal3D
   turns the hero into a 3D *proxy* mesh (TripoSplat with `-p proxy.model=triposplat`), giro renders
   the proxy's depth along a camera path it chooses (a spiral rising to 45°, starting at the hero's
   own camera), and Wan 2.2 Fun Control repaints that path with the hero, cut out onto black, as the
@@ -45,7 +45,9 @@ There are two ways to make the orbit:
   refines them, and the views from above are real views instead of guesses. SeedVR2 then doubles
   the frames' resolution before training.
 - **MiniMax H3 with a 360° orbit LoRA** (`--model h3`): the hero is the first and last frame of a
-  generated orbit, and COLMAP recovers the cameras. Its license excludes the US, EU, UK and Korea.
+  generated orbit, and COLMAP recovers the cameras. By eye it still keeps the hero's look better
+  on some subjects, but its license excludes the US, EU, UK and Korea, so it is not the default
+  and giro's own results do not depend on it.
 
 The rest follows from there. Masking the subject before COLMAP rescues "turntable" videos. Brush
 trains with a transparent background. The **crop** keeps Gaussians that land inside the subject
@@ -125,21 +127,24 @@ The details are in [docs/FINDINGS.md](docs/FINDINGS.md).
   including their swords and mirrors.
 - The Quest 3 browser stuttered at 245K splats, well below the 400–600K I expected. This needs a
   cleaner measurement.
-- The proxy orbit, against H3 with the same training on five subjects, matched or beat it on the
-  hero view on three of five (adventurer LPIPS 0.065 against 0.093, knight 0.057 against 0.071) and
-  was sharper on all five, with a formed top where H3's is a smear. H3 kept the hero's look around
-  the ring better on four of five: the video follows the proxy's shape, and TripoSplat's tank is
-  boxier than the real one.
+- The proxy orbit, against H3 on five subjects, scored as well or better on the hero view and
+  sharper on all five, with a formed top where H3's is a smear. Both scores flatter it: it trains
+  on the hero five times (H3 once), which alone is worth about 1.5 dB there, and the sharpness score
+  also rewards the texture SeedVR2 invents. H3 kept the hero's look around the ring better on four
+  of five, and by eye it was clearly better on the scooter: the video follows the proxy's shape,
+  and TripoSplat's tank was boxier than the real one.
 - Training, not the video, was where detail went missing: at an 80K splat cap the splat kept about
   60% of the frames' sharpness. SeedVR2 frames and up to 150K splats for 60K iterations fixed most
   of that; a sharper, slower 768×1024 video alone did not.
-- Measure on the hero view. Brush's held-out PSNR scores a video against itself, and a blurrier
-  video can score higher. `scripts/evaluate.py` scores the hero view, sharpness and likeness.
+- Brush's held-out PSNR scores a video against itself, and a blurrier video can score higher.
+  `scripts/evaluate.py` scores the hero view, sharpness and likeness, but compare splats by eye,
+  side by side and trained the same way, before trusting a number.
 
-**Where it stands (Oct 4, 2026).** The proxy orbit is now the default: anyone can use its models,
-it passed the gate on its first try in 14 of 14 runs across five subjects and three seeds, and its
-quality is on par with H3's or better except for how faithfully the shape of hard-surface subjects
-comes through. Since Oct 9, Pixal3D (MIT) is the proxy, on ComfyUI v0.38.2: TripoSplat gave the
+**Where it stands (Oct 9, 2026).** The proxy orbit is the default because anyone can use its
+models, not because it beats H3: by eye H3 still keeps the hero's look better on some subjects.
+The proxy orbit passed the gate on its first try in 14 of 14 runs across five subjects and three
+seeds, and its weak point is the proxy: the video follows the proxy's shape, so hard-surface
+subjects come out only as faithful as their proxy. Since Oct 9, Pixal3D (MIT) is the proxy, on ComfyUI v0.38.2: TripoSplat gave the
 tank a hull about as wide as it is long, Pixal3D a long one with the barrel in line. The video now
 starts from the hero cut out onto black, which keeps a floor and wall from tilting around the
 subject in the views from above. Its denser splats (up to 150K) still need a check in the headset. Details
@@ -203,8 +208,8 @@ including what it says about outputs, before use.
 | Component | Role | License |
 |---|---|---|
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Headless inference server (over HTTP) | GPL-3.0 |
-| [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) ([ComfyUI files](https://huggingface.co/Comfy-Org/MiniMax-H3)) | Orbit video | [MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) |
-| [MiniMax-H3 360° Orbit LoRA](https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA) | Orbit video (on by default) | MiniMax H3 Community License |
+| [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) ([ComfyUI files](https://huggingface.co/Comfy-Org/MiniMax-H3)) | Orbit video (`--model h3`, optional) | [MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) |
+| [MiniMax-H3 360° Orbit LoRA](https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA) | Orbit video (H3 orbit, on by default there) | MiniMax H3 Community License |
 | [Pixal3D](https://huggingface.co/TencentARC/Pixal3D) ([ComfyUI files](https://huggingface.co/Comfy-Org/Pixal3D)) | Proxy mesh (proxy orbit) | MIT |
 | [TRELLIS.2](https://huggingface.co/microsoft/TRELLIS.2-4B) shape and texture VAEs, in Pixal3D's ComfyUI files | Pixal3D's decoders | MIT |
 | [DINOv3](https://github.com/facebookresearch/dinov3) ViT-L, in Pixal3D's ComfyUI files | Pixal3D's image encoder | [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md) |
@@ -225,14 +230,14 @@ including what it says about outputs, before use.
 | [Spark](https://github.com/sparkjsdev/spark), [three.js](https://threejs.org) | Web and WebXR viewer | MIT |
 | [FFmpeg](https://ffmpeg.org) | Frame extraction | LGPL/GPL |
 
-**MiniMax H3's license is restrictive; read it before you run giro.** As of October 2026 it
+**MiniMax H3's license is restrictive; read it before you run giro with `--model h3`.** As of October 2026 it
 grants use only outside its "Excluded Territories" (the European Union, the United Kingdom, the
 Republic of Korea and the United States), and asks people there to contact MiniMax for a license.
 It also requires a "Powered by MiniMax H3" notice on products built with it, and it does not allow
-using outputs to improve other AI models. This is a summary, not legal advice. The orbit step is
-the only part of giro that depends on H3.
+using outputs to improve other AI models. This is a summary, not legal advice. Only the H3 orbit
+(`--model h3`) uses H3; the default proxy orbit does not.
 
-**The proxy orbit (`--model wan22-control`, experimental) does not use MiniMax H3.** Its models
+**The proxy orbit (`--model wan22-control`, the default) does not use MiniMax H3.** Its models
 allow commercial use in every region. Pixal3D, the TRELLIS.2 VAEs and MoGe-2 are MIT; Tencent's
 own Hugging Face repo for Pixal3D refuses downloads from the EU (a download gate, not a term of the
 MIT license), and the Comfy-Org repack giro uses is not gated. Pixal3D's ComfyUI files and

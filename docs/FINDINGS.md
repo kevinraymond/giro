@@ -127,7 +127,9 @@ The proxy orbit's defaults are the bold row: a two-turn spiral to 45° at 576×7
 SeedVR2 ×2, and up to 150K splats for 60K iterations (still under the 150K VR budget after the
 crop; not yet checked in the headset).
 
-Against H3 with the orbit LoRA, both trained the same way (150K splats, 60K iterations), seed 1:
+Against H3 with the orbit LoRA, both trained with 150K splats for 60K iterations, seed 1. The proxy
+orbit trains on the hero five times and H3 once, which is worth about 1.5 dB on the hero view, so
+that column flatters the proxy orbit:
 
 | Subject | Hero PSNR / LPIPS, H3 → proxy | Sharpness ring, H3 → proxy | Likeness ring, H3 → proxy |
 |---|---|---|---|
@@ -137,10 +139,11 @@ Against H3 with the orbit LoRA, both trained the same way (150K splats, 60K iter
 | Scooter | 19.4 / 0.077 → 18.9 / 0.079 | 0.46 → 0.48 | **0.80** → 0.66 |
 | Tank | 18.5 / 0.043 → 18.5 / 0.044 | 0.33 → 0.39 | **0.89** → 0.58 |
 
-- The proxy orbit matches or beats H3 on the hero view and is sharper on every subject, with a top
-  that is formed instead of smeared. H3 keeps the hero's look around the ring better on four of
-  five: the proxy's shape is TripoSplat's, and the video follows it. A better proxy is the next
-  lever for hard-surface subjects.
+- The proxy orbit scores as well or better on the hero view (see above) and sharper on every
+  subject, with a top that is formed instead of smeared. Part of that sharpness is texture SeedVR2
+  invents, which the Laplacian also rewards. H3 keeps the hero's look around the ring better on four
+  of five, and by eye it was clearly better on the scooter: the proxy's shape is TripoSplat's, and
+  the video follows it. A better proxy is the next lever for hard-surface subjects.
 - Starting the clips from the proxy's color render (`orbit_video.init`) helped the tank (19.6 / 0.040,
   likeness 0.71) and hurt the adventurer (its pale proxy colors came through on the back), so it
   stays an option.
@@ -172,9 +175,10 @@ view yet (19.3 dB / 0.040) and more of the hero's look around the ring (0.67 aga
 
 Where it stands, and what is next (Oct 4):
 
-- The proxy orbit became giro's default on Oct 4: the license question goes away, the hero view is
-  as good or better, the splats are sharper, the top is real coverage, and 14 of 14 runs passed.
-  Not done: the shapes of hard-surface subjects are TripoSplat's.
+- The proxy orbit became giro's default on Oct 4, and it stays the default for its license: H3's
+  excludes the US, EU, UK and Korea, and the proxy orbit's models can be used anywhere. It does not
+  beat H3 everywhere (H3 keeps the hero's look better on some subjects), but its top is real
+  coverage and 14 of 14 runs passed. Its weak point is the proxy's shape.
 - SageAttention (Triton kernels, BSD-3-Clause; `GIRO_COMFY_SAGE=1`): Wan at 768×1024 went from
   1240 s to 828 s and H3 from 425 s to 321 s per clip, with the hero view, sharpness and likeness
   within seed noise (H3 adventurer: 23.2 dB / 0.092 with it, 22.6 / 0.093 without). But
