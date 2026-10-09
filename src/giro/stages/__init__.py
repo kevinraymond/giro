@@ -21,17 +21,19 @@ ORBIT = OrbitVideo()
 # the subject in front of a still room into a usable orbit (docs/FINDINGS.md, "Masks").
 PIPELINE: list[Stage] = [ORBIT, Extract(), Dedup(), Masks(), ColmapPoses(), Gate(), Dataset(), Train(),
                          Crop(), Canonicalize(), Export()]
-# The proxy orbit (orbit model "wan22-control"): a TripoSplat proxy of the hero comes first, its
+# The proxy orbit (orbit model "wan22-control"): a 3D proxy of the hero comes first (Pixal3D), its
 # depth along a known camera path drives the video, and the path's cameras are the poses
 # (docs/FINDINGS.md, "Proxy orbit").
 PROXY = Proxy()
 PROXY_MODEL = "wan22-control"
-# What the proxy orbit sets under the user's own per-stage params: every frame has a known
+# What the proxy orbit sets under the user's own per-stage params: Pixal3D's mesh as the proxy (Oct 9,
+# 2026: hard-surface shapes, e.g. the tank's hull, where TripoSplat's was square; board #3744), every frame has a known
 # camera (no dedup), COLMAP refines the path's cameras instead of mapping, the hero, the
 # video's exact first frame and its only real view, counts five times in training, and training
 # keeps up to 150K splats for 60K iterations: its SeedVR2-sharpened frames carry detail an 80K
 # cap throws away (docs/FINDINGS.md, "Proxy orbit").
 PROXY_PARAMS: dict[str, dict] = {
+    "proxy": {"model": "pixal3d"},
     "dedup": {"keep_all": True},
     "poses_colmap": {"mapper": "path"},
     "dataset": {"hero_copies": 5},

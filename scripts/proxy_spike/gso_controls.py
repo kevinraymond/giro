@@ -2,7 +2,7 @@
 gso_render.py, what the texture route would show at each target camera, and that camera mapped into
 the object's own frame so gso_render.py --aligned can render the matching ground truth.
 
-    GIRO_COMFY_DIR=vendor/comfyui-next gso_controls.py RENDERS_DIR OUT_DIR GPU [--names a,b | --only N]
+    gso_controls.py RENDERS_DIR OUT_DIR GPU [--names a,b | --only N]
         [--split train,heldout --manifest CSV] [--shard J/K] [--seed 46] [--points 3000000]
 
 Per object, as the route does it (proxy stage, proxy_mesh.py, project_texture.py):

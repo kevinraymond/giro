@@ -37,10 +37,11 @@ Passing seeds are ranked by held-out PSNR.
 
 There are two ways to make the orbit:
 
-- **The proxy orbit** (the default since Oct 4, 2026; permissively licensed models): TripoSplat
-  turns the hero into a rough 3D *proxy*, giro renders the proxy's depth along a camera path it
-  chooses (a spiral rising to 45°, starting at the hero's own camera), and Wan 2.2 Fun Control
-  repaints that path with the hero as the first frame. The cameras are known, so COLMAP only
+- **The proxy orbit** (the default since Oct 4, 2026; permissively licensed models): Pixal3D
+  turns the hero into a 3D *proxy* mesh (TripoSplat with `-p proxy.model=triposplat`), giro renders
+  the proxy's depth along a camera path it chooses (a spiral rising to 45°, starting at the hero's
+  own camera), and Wan 2.2 Fun Control repaints that path with the hero, cut out onto black, as the
+  first frame. The cameras are known, so COLMAP only
   refines them, and the views from above are real views instead of guesses. SeedVR2 then doubles
   the frames' resolution before training.
 - **MiniMax H3 with a 360° orbit LoRA** (`--model h3`): the hero is the first and last frame of a
@@ -138,8 +139,10 @@ The details are in [docs/FINDINGS.md](docs/FINDINGS.md).
 **Where it stands (Oct 4, 2026).** The proxy orbit is now the default: anyone can use its models,
 it passed the gate on its first try in 14 of 14 runs across five subjects and three seeds, and its
 quality is on par with H3's or better except for how faithfully the shape of hard-surface subjects
-comes through. Pixal3D (MIT) as the proxy fixed the tank's shape in a first test; it needs a newer
-ComfyUI than giro pins. Its denser splats (up to 150K) still need a check in the headset. Details
+comes through. Since Oct 9, Pixal3D (MIT) is the proxy, on ComfyUI v0.38.2: TripoSplat gave the
+tank a hull about as wide as it is long, Pixal3D a long one with the barrel in line. The video now
+starts from the hero cut out onto black, which keeps a floor and wall from tilting around the
+subject in the views from above. Its denser splats (up to 150K) still need a check in the headset. Details
 and the open questions are in [FINDINGS](docs/FINDINGS.md#proxy-orbit).
 
 ## Running it
@@ -202,7 +205,11 @@ including what it says about outputs, before use.
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Headless inference server (over HTTP) | GPL-3.0 |
 | [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) ([ComfyUI files](https://huggingface.co/Comfy-Org/MiniMax-H3)) | Orbit video | [MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) |
 | [MiniMax-H3 360° Orbit LoRA](https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA) | Orbit video (on by default) | MiniMax H3 Community License |
-| [TripoSplat](https://github.com/VAST-AI-Research/TripoSplat) ([weights](https://huggingface.co/VAST-AI/TripoSplat)) | Proxy splat (proxy orbit) | MIT |
+| [Pixal3D](https://huggingface.co/TencentARC/Pixal3D) ([ComfyUI files](https://huggingface.co/Comfy-Org/Pixal3D)) | Proxy mesh (proxy orbit) | MIT |
+| [TRELLIS.2](https://huggingface.co/microsoft/TRELLIS.2-4B) shape and texture VAEs, in Pixal3D's ComfyUI files | Pixal3D's decoders | MIT |
+| [DINOv3](https://github.com/facebookresearch/dinov3) ViT-L, in Pixal3D's ComfyUI files | Pixal3D's image encoder | [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md) |
+| [MoGe-2](https://huggingface.co/Ruicheng/moge-2-vitl-normal) ViT-L | Field of view for Pixal3D | MIT |
+| [TripoSplat](https://github.com/VAST-AI-Research/TripoSplat) ([weights](https://huggingface.co/VAST-AI/TripoSplat)) | Proxy splat (proxy orbit, `-p proxy.model=triposplat`) | MIT |
 | [DINOv3](https://github.com/facebookresearch/dinov3) ViT-H, bundled with TripoSplat | TripoSplat's image encoder | [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md) |
 | [FLUX.2 autoencoder](https://github.com/black-forest-labs/flux2#flux2-autoencoder), bundled with TripoSplat | TripoSplat's image conditioning | Apache-2.0 |
 | [Wan 2.2 Fun Control A14B](https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-Control) ([ComfyUI files](https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged)) | Orbit video (proxy orbit) | Apache-2.0 |
@@ -226,8 +233,10 @@ using outputs to improve other AI models. This is a summary, not legal advice. T
 the only part of giro that depends on H3.
 
 **The proxy orbit (`--model wan22-control`, experimental) does not use MiniMax H3.** Its models
-allow commercial use in every region. TripoSplat is MIT, but its Hugging Face repo bundles Meta's
-DINOv3 encoder under the DINOv3 License, the same terms as SAM 3.1's SAM License: royalty-free and
+allow commercial use in every region. Pixal3D, the TRELLIS.2 VAEs and MoGe-2 are MIT; Tencent's
+own Hugging Face repo for Pixal3D refuses downloads from the EU (a download gate, not a term of the
+MIT license), and the Comfy-Org repack giro uses is not gated. Pixal3D's ComfyUI files and
+TripoSplat's repo both bundle Meta's DINOv3 encoder under the DINOv3 License, the same terms as SAM 3.1's SAM License: royalty-free and
 commercial, but no military, warfare, nuclear, espionage or weapons uses, no use by sanctioned
 parties, no reverse engineering, the license text must go with the weights, and Meta can change the
 terms. The FLUX.2 VAE bundled with TripoSplat is Apache-2.0; the non-commercial license covers

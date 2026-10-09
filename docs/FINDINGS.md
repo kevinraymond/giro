@@ -55,8 +55,10 @@ was trained on, seeds 1–4 with no rerolls:
 MiniMax H3's license excludes the US, EU, UK and South Korea, so giro has a second way to make the
 orbit from permissively licensed models (`model=wan22-control`):
 
-1. TripoSplat (MIT) turns the masked hero into a rough splat, the *proxy*, in about 10 s per
-   seed. giro runs 4 seeds and keeps the one whose silhouette best matches the hero.
+1. Pixal3D (MIT; the default since Oct 9, see below) turns the masked hero into a mesh, the *proxy*,
+   sampled into surface Gaussians; until then TripoSplat (MIT, `proxy.model=triposplat`) made a rough
+   splat in about 10 s per seed. giro runs 4 seeds and keeps the one whose silhouette best matches
+   the hero.
 2. giro fits the hero's camera to the proxy on the CPU (about 5 s): silhouette IoU over yaw and
    pitch, distance and framing from the silhouettes' boxes, then a Nelder-Mead refinement. Front
    and back share a silhouette, so the color against the hero breaks the tie. On the adventurer
@@ -177,8 +179,15 @@ Where it stands, and what is next (Oct 4):
   1240 s to 828 s and H3 from 425 s to 321 s per clip, with the hero view, sharpness and likeness
   within seed noise (H3 adventurer: 23.2 dB / 0.092 with it, 22.6 / 0.093 without). But
   Qwen-Image-Edit returns black images with it, and ComfyUI's flag is global, so it stays opt-in.
-- Next: Pixal3D as the proxy, which means moving giro's pinned ComfyUI from v0.31.1 to v0.38 (the
-  whole pipeline ran on v0.38.2 for the tank); the 135K-splat exports in the headset; and a way to
+- Done Oct 9: Pixal3D is the proxy and giro pins ComfyUI v0.38.2. On the tank, TripoSplat's hull
+  came out about as wide as it is long (proxy box 0.98 x 0.98 in plan, an Abrams is ~2.3:1) with
+  the barrel bent 45-90° off the hull, and Wan follows that depth; Pixal3D's hull is long and the
+  barrel in line. Its proxy-only likeness was lower than TripoSplat's on the adventurer and the
+  raincoat (0.56 and 0.57 against 0.75 and 0.66, Oct 4), but their orbits looked right by eye. The
+  video also starts from the hero cut out onto black (`orbit_video.hero_bg`, "keep" for the old
+  behavior): a floor and wall behind people tilted oddly in the views from above, and the proxy's
+  depth is drawn on black anyway.
+- Next: the 135K-splat exports in the headset; and a way to
   make chained clips agree (render the first splat into the later clips as kept content, as
   VideoFrom3D does, or per-image appearance in training).
 

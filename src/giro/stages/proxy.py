@@ -302,8 +302,8 @@ class Proxy(Stage):
         "n_gaussians": 262_144,
         "fov": 35.0,        # the hero camera's, over the image's smaller side
     }
-    # Also read: "model", "triposplat" (default), "pixal3d" or "trellis2" (TRELLIS_MODELS; these
-    # need ComfyUI v0.34 or later).
+    # Also read: "model", "triposplat" (this stage's own default), "pixal3d" (what the proxy orbit
+    # sets, stages.PROXY_PARAMS) or "trellis2" (TRELLIS_MODELS; these need ComfyUI v0.34 or later).
     extra_params = ("model",)
     inputs = ("hero/hero.png",)
     outputs = ("proxy/proxy.ply", "proxy/proxy.json")

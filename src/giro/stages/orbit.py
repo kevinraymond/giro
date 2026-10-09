@@ -100,7 +100,9 @@ class OrbitVideo(Stage):
     # default (proxy_upscale), null turns it off; "window": {"length" (81), "overlap" (30)} samples a
     # clip longer than 81 frames in overlapping context windows; "video": "fun_control" (default) or
     # "vace" (Wan 2.2 VACE-Fun, workflows.PROXY_VIDEO); "handoff": {"start_step" (14)}, the last steps
-    # by plain Wan 2.2 I2V's low-noise expert (workflows.with_handoff).
+    # by plain Wan 2.2 I2V's low-noise expert (workflows.with_handoff); "hero_bg": "black" (default) gives
+    # the video the hero cut out by the proxy stage's SAM mask on black (proxy_render/hero_black.png), as the proxy's depth is drawn
+    # (no floor or wall to carry around the subject at high angles), "keep" the hero as it is.
     # With H3 and no "lora" given, the 360 orbit LoRA is used, with the prompt it was trained on
     # in place of giro's stock prompt (docs/FINDINGS.md, "Orbit videos").
     tuned = {"lora": "h3/minimax_h3_flf2v_orbit360_pablodawson_v1.safetensors"}
@@ -110,11 +112,12 @@ class OrbitVideo(Stage):
     path_defaults = {"path": "spiral", "turns": 2.0, "pitch_end": 45.0}
     # The proxy orbit upscales its frames twice with SeedVR2 unless "upscale" is given (null: off).
     proxy_upscale = {"scale": 2.0}
-    extra_params = ("lora", "lora_strength", "lora_low", "model", "clips", "refine", "init", "upscale", "window", "video", "handoff", *path_defaults)
+    extra_params = ("lora", "lora_strength", "lora_low", "model", "clips", "refine", "init", "upscale", "window", "video", "handoff",
+                    "hero_bg", *path_defaults)
 
     def inputs_for(self, params: dict[str, Any]) -> tuple[str, ...]:
         if params.get("model") == "wan22-control":
-            return self.inputs + ("proxy/proxy.ply", "proxy/proxy.json")
+            return self.inputs + ("proxy/proxy.ply", "proxy/proxy.json", "proxy/hero_mask.png")
         return self.inputs
 
     def run(self, attempt: Path, params: dict[str, Any], ctx: Ctx) -> None:
@@ -169,7 +172,8 @@ class OrbitVideo(Stage):
         seconds = 0.0
         async with ComfyClient(url) as comfy:
             try:
-                hero = await comfy.upload_image(attempt / "hero" / "hero.png")
+                hero_path = self._video_hero(attempt, params)
+                hero = await comfy.upload_image(hero_path)
                 start = hero
                 n_previews = 0
                 for k, clip in enumerate(clips):
@@ -244,7 +248,7 @@ class OrbitVideo(Stage):
                     if cameras and len(images) != len(clip):
                         raise StageFailed(f"Wan returned {len(images)} frames for {len(clip)} cameras")
                     if cameras and k == 0:
-                        await self._check_first_frame(comfy, images[0], attempt, ctx)
+                        await self._check_first_frame(comfy, images[0], attempt, hero_path, ctx)
                     ctx.progress(0.9 * (k + 1) / len(clips), f"downloading {len(images)} frames")
                     for i, img in enumerate(images):
                         if k and i == 0:
@@ -293,14 +297,30 @@ class OrbitVideo(Stage):
         ctx.metric("seconds", round(seconds, 1))
         ctx.progress(1.0, f"{n_frames} frames in {seconds:.0f}s")
 
-    async def _check_first_frame(self, comfy: ComfyClient, image: dict[str, str], attempt: Path, ctx: Ctx) -> None:
+    @staticmethod
+    def _video_hero(attempt: Path, params: dict[str, Any]) -> Path:
+        """The image the video starts from: hero/hero.png, or for the proxy orbit (hero_bg "black",
+        the default) proxy_render/hero_black.png, the hero times the proxy stage's SAM mask on black
+        (not in hero/: later stages take every image there as a hero view)."""
+        hero = attempt / "hero" / "hero.png"
+        if params.get("model") != "wan22-control" or params.get("hero_bg", "black") == "keep":
+            return hero
+        img = Image.open(hero).convert("RGB")
+        mask = Image.open(attempt / "proxy" / "hero_mask.png").convert("L").resize(img.size, Image.Resampling.LANCZOS)
+        out = attempt / "proxy_render" / "hero_black.png"
+        out.parent.mkdir(exist_ok=True)
+        Image.composite(img, Image.new("RGB", img.size), mask).save(out)
+        return out
+
+    async def _check_first_frame(self, comfy: ComfyClient, image: dict[str, str], attempt: Path, hero_path: Path,
+                                 ctx: Ctx) -> None:
         """The first frame is pinned to the hero (31 dB against it on the first runs). Once, on
         Oct 4, Wan returned 81 frames of pure noise (about 10 dB); stop there instead of masking
         and training on noise."""
         first = attempt / "frames_raw" / ".first.png"
         await comfy.download(image, first)
         frame = Image.open(first).convert("RGB")
-        hero = Image.open(attempt / "hero" / "hero.png").convert("RGB").resize(frame.size, Image.Resampling.LANCZOS)
+        hero = Image.open(hero_path).convert("RGB").resize(frame.size, Image.Resampling.LANCZOS)
         first.unlink()
         mse = float(np.mean((np.asarray(frame, dtype=np.float64) - np.asarray(hero, dtype=np.float64)) ** 2))
         psnr = 10 * np.log10(255.0**2 / max(mse, 1e-6))

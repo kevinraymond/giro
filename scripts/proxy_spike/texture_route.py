@@ -71,7 +71,6 @@ attempt, out = args.attempt.resolve(), args.out.resolve()
 out.mkdir(parents=True, exist_ok=True)
 work, seeds_dir = out / "work", out / "seeds"
 angles = args.angles.resolve() if args.angles else out / "angles"
-NEXT = str(ROOT / "vendor" / "comfyui-next")
 route: dict = json.loads((out / "route.json").read_text()) if (out / "route.json").exists() else {}
 g = str(args.gpu)
 
@@ -102,8 +101,8 @@ print("1. proxy seeds", flush=True)
 seeds = list(range(args.first_seed, args.first_seed + args.seeds))
 if not all((seeds_dir / f"mesh_pixal3d_{s}.npz").exists() for s in seeds):
     comfy_down()
-    run("proxy_mesh.py", str(attempt), str(seeds_dir), g, "pixal3d", ",".join(map(str, seeds)), comfy=NEXT)
-    comfy_down(NEXT)
+    run("proxy_mesh.py", str(attempt), str(seeds_dir), g, "pixal3d", ",".join(map(str, seeds)))
+    comfy_down()
 
 print("2. anchor views", flush=True)
 if not (angles / "registration.json").exists():

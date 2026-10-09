@@ -1,7 +1,7 @@
 """Regenerate an attempt's TRELLIS.2/Pixal3D proxy with its seed and keep the mesh, which the
 proxy stage only samples into a splat. Same image (proxy/hero_rgba.png) and params as the stage.
 
-    GIRO_COMFY_DIR=vendor/comfyui-next proxy_mesh.py ATTEMPT OUT_DIR GPU [MODEL SEED,SEED,...]
+    proxy_mesh.py ATTEMPT OUT_DIR GPU [MODEL SEED,SEED,...]
 
 With MODEL and SEEDS (trellis2 or pixal3d), writes OUT_DIR/mesh_<model>_<seed>.npz for each,
 to compare seeds and models.

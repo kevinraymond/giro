@@ -3,7 +3,7 @@ of the hero alone (TencentARC's multi-view weights, Aug 31 2026; Comfy-Org/Pixal
 pixal3d_multiview_bf16). Writes OUT/mesh_pixal3dmv-<mode><k>_<seed>.npz, which pick_seed.py
 scores next to the single-view seeds.
 
-    GIRO_COMFY_DIR=vendor/comfyui-next pixal3d_mv.py ATTEMPT ROUTE_OUT OUT GPU --mode rig|posed
+    pixal3d_mv.py ATTEMPT ROUTE_OUT OUT GPU --mode rig|posed
         [--views 4] [--seeds 201,202,203]
 
 ROUTE_OUT is a texture_route.py output (angles/ with registration.json, work/ with mesh.npz,

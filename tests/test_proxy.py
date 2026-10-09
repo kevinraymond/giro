@@ -46,6 +46,22 @@ def test_proxy_mode_adds_the_proxy_stage_and_its_params():
     assert stages.pipeline(None) is stages.PIPELINE
     assert stages.mode_params(stages.PROXY_MODEL, "poses_colmap") == {"mapper": "path"}
     assert stages.mode_params("h3", "poses_colmap") == {}
+    assert stages.mode_params(stages.PROXY_MODEL, "proxy") == {"model": "pixal3d"}
+
+
+def test_proxy_orbit_starts_from_the_hero_cut_out_on_black(tmp_path):
+    (tmp_path / "hero").mkdir()
+    (tmp_path / "proxy").mkdir()
+    Image.new("RGB", (8, 8), (200, 100, 50)).save(tmp_path / "hero" / "hero.png")
+    mask = np.zeros((8, 8), np.uint8)
+    mask[2:6, 2:6] = 255
+    Image.fromarray(mask, "L").save(tmp_path / "proxy" / "hero_mask.png")
+    out = stages.ORBIT._video_hero(tmp_path, {"model": stages.PROXY_MODEL})
+    px = np.asarray(Image.open(out))
+    assert out == tmp_path / "proxy_render" / "hero_black.png" and not list((tmp_path / "hero").glob("*black*"))
+    assert (px[3, 3] == (200, 100, 50)).all() and (px[0, 0] == 0).all()
+    assert stages.ORBIT._video_hero(tmp_path, {"model": stages.PROXY_MODEL, "hero_bg": "keep"}).name == "hero.png"
+    assert stages.ORBIT._video_hero(tmp_path, {"model": "h3"}).name == "hero.png"
 
 
 def _figure(path, n=6000, seed=0):

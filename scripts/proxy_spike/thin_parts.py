@@ -10,7 +10,7 @@ have. Those pixels
     fusion): WORK/thin/extra.npz (xyz, rgb), which project_texture.py --extra renders with the
     mesh, so the splat gets the fork.
 
-    GIRO_COMFY_DIR=vendor/comfyui-next thin_parts.py ATTEMPT ANCHOR_DIR WORK GPU --skip 08,10,...
+    thin_parts.py ATTEMPT ANCHOR_DIR WORK GPU --skip 08,10,...
 
 Reads WORK/texture.json (hero fit), WORK/anchor_cameras.json; writes WORK/thin/ (depth/*.npz,
 exclude/*.png, extra.npz, flagged.jpg, thin.json).
