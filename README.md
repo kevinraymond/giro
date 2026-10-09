@@ -3,7 +3,7 @@
 **One image in, a cropped Gaussian splat you can walk around in VR out.**
 
 > **Experimental research prototype.** A personal learning project, not a product. It runs on one
-> machine for one user, needs two 24 GB GPUs, and changes often. The numbers in
+> machine for one user, needs a 24 GB GPU (two for the MiniMax H3 orbit), and changes often. The numbers in
 > [docs/FINDINGS.md](docs/FINDINGS.md) come from a handful of subjects and seeds: lab notes, not
 > benchmarks.
 
@@ -34,6 +34,20 @@ seed is rerolled. If COLMAP's cameras are what fails, a **pose fallback** poses 
 Depth Anything 3 and refines them with COLMAP. If the only problem is one missing arc, **gap fill**
 regenerates just that arc.
 Passing seeds are ranked by held-out PSNR.
+
+There are two ways to make the orbit:
+
+- **The proxy orbit** (the default; its models are licensed for use everywhere): Pixal3D
+  turns the hero into a 3D *proxy* mesh (TripoSplat with `-p proxy.model=triposplat`), giro renders
+  the proxy's depth along a camera path it chooses (a spiral rising to 45°, starting at the hero's
+  own camera), and Wan 2.2 Fun Control repaints that path with the hero, cut out onto black, as the
+  first frame. The cameras are known, so COLMAP only
+  refines them, and the views from above are real views instead of guesses. SeedVR2 then doubles
+  the frames' resolution before training.
+- **MiniMax H3 with a 360° orbit LoRA** (`--model h3`): the hero is the first and last frame of a
+  generated orbit, and COLMAP recovers the cameras. By eye it still keeps the hero's look better
+  on some subjects, but its license excludes the US, EU, UK and Korea, so it is not the default
+  and giro's own results do not depend on it.
 
 The rest follows from there. Masking the subject before COLMAP rescues "turntable" videos. Brush
 trains with a transparent background. The **crop** keeps Gaussians that land inside the subject
@@ -113,12 +127,35 @@ The details are in [docs/FINDINGS.md](docs/FINDINGS.md).
   including their swords and mirrors.
 - The Quest 3 browser stuttered at 245K splats, well below the 400–600K I expected. This needs a
   cleaner measurement.
+- The proxy orbit, against H3 on five subjects, scored as well or better on the hero view and
+  sharper on all five, with a formed top where H3's is a smear. Both scores flatter it: it trains
+  on the hero five times (H3 once), which alone is worth about 1.5 dB there, and the sharpness score
+  also rewards the texture SeedVR2 invents. H3 kept the hero's look around the ring better on four
+  of five, and by eye it was clearly better on the scooter: the video follows the proxy's shape,
+  and TripoSplat's tank was boxier than the real one.
+- Training, not the video, was where detail went missing: at an 80K splat cap the splat kept about
+  60% of the frames' sharpness. SeedVR2 frames and up to 150K splats for 60K iterations fixed most
+  of that; a sharper, slower 768×1024 video alone did not.
+- Brush's held-out PSNR scores a video against itself, and a blurrier video can score higher.
+  `scripts/evaluate.py` scores the hero view, sharpness and likeness, but compare splats by eye,
+  side by side and trained the same way, before trusting a number.
+
+**Where it stands (Oct 9, 2026).** The proxy orbit is the default because anyone can use its
+models, not because it beats H3: by eye H3 still keeps the hero's look better on some subjects.
+The proxy orbit passed the gate on its first try in 14 of 14 runs across five subjects and three
+seeds, and its weak point is the proxy: the video follows the proxy's shape, so hard-surface
+subjects come out only as faithful as their proxy. Since Oct 9, Pixal3D (MIT) is the proxy, on ComfyUI v0.38.2: TripoSplat gave the
+tank a hull about as wide as it is long, Pixal3D a long one with the barrel in line. The video now
+starts from the hero cut out onto black, which keeps a floor and wall from tilting around the
+subject in the views from above. Its denser splats (up to 150K) still need a check in the headset. Details
+and the open questions are in [FINDINGS](docs/FINDINGS.md#proxy-orbit).
 
 ## Running it
 
 giro is shared to read and learn from. It is not packaged for easy installation. You will need:
 
-- Linux with two 24 GB NVIDIA GPUs. The video alone peaks at about 22 GB.
+- Linux with a 24 GB NVIDIA GPU: the proxy orbit's steps run one after another on one card, about
+  20 minutes per seed. The H3 orbit's video alone peaks at about 22 GB, so it wants a second card.
 - Python 3.12 with [uv](https://docs.astral.sh/uv/), Node.js, Rust, FFmpeg, and COLMAP 4.x with CUDA.
 - The model weights, which you supply (see [Third-party software and models](#third-party-software-and-models)).
 
@@ -128,30 +165,36 @@ scripts/setup_comfy.sh                  # pinned headless ComfyUI in vendor/
 scripts/setup_brush.sh                  # pinned Brush
 scripts/setup_splat_transform.sh        # pinned splat-transform
 scripts/setup_da3.sh                    # optional pose fallback (Depth Anything 3)
-# point scripts/extra_model_paths.yaml at your models
+# point scripts/extra_model_paths.yaml at your models; the orbit LoRA goes in
+# loras/h3/minimax_h3_flf2v_orbit360_pablodawson_v1.safetensors (or pass -p orbit_video.lora=null)
 cd ui && npm ci && npm run build && cd ..
 
 uv run giro serve                       # UI on http://<host>:8470
-uv run giro run image.png -o data/try1  # or one seed from the CLI
+uv run giro run image.png -o data/try1 --gpu 0  # or one seed from the CLI (the proxy orbit)
+uv run giro run image.png -o data/try2 --model h3          # MiniMax H3 instead
 uv run giro job export data/jobs/<job>  # a job as one zip: offline HTML report + PLY/SOG/SPZ
 ```
 
 `just check` lints and runs the tests. Outputs go to `data/`, which git ignores.
+`uv run --group eval scripts/evaluate.py OUT ATTEMPT...` scores finished attempts (hero view,
+sharpness, likeness) so orbit modes and settings can be compared.
 
 ## Repository map
 
 | Path | Contents |
 |---|---|
-| `src/giro/stages/` | One module per pipeline step |
+| `src/giro/stages/` | One module per pipeline step (`proxy.py`, `path_poses.py`: the proxy orbit) |
+| `src/giro/path.py` | The proxy orbit's camera paths |
 | `src/giro/api.py`, `manager.py`, `job.py`, `scheduler.py` | Orchestrator: API, jobs, rerolls, GPU scheduling |
 | `src/giro/comfy/`, `src/giro/workflows/` | Headless ComfyUI client and workflows |
 | `ui/` | React UI with a [Spark](https://sparkjs.dev) splat viewer and a WebXR page |
-| `scripts/` | Pinned setup scripts, sweeps, report and screenshot helpers |
+| `scripts/` | Pinned setup scripts, sweeps, the evaluator, report and screenshot helpers |
 | `docs/FINDINGS.md` | Lab notes |
 
 ## Limitations
 
 - The top of the head, the underside and other unseen parts are invented, and they come out soft.
+  The proxy orbit sees the top but still invents it, and its shapes are only as good as its proxy.
 - The measurements are small: a few subjects and seeds, untuned, on one machine.
 - The test images are AI-generated, so held-out PSNR measures consistency with the generated
   video, not with reality.
@@ -165,7 +208,18 @@ including what it says about outputs, before use.
 | Component | Role | License |
 |---|---|---|
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Headless inference server (over HTTP) | GPL-3.0 |
-| [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) ([ComfyUI files](https://huggingface.co/Comfy-Org/MiniMax-H3)) | Orbit video | [MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) |
+| [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) ([ComfyUI files](https://huggingface.co/Comfy-Org/MiniMax-H3)) | Orbit video (`--model h3`, optional) | [MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) |
+| [MiniMax-H3 360° Orbit LoRA](https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA) | Orbit video (H3 orbit, on by default there) | MiniMax H3 Community License |
+| [Pixal3D](https://huggingface.co/TencentARC/Pixal3D) ([ComfyUI files](https://huggingface.co/Comfy-Org/Pixal3D)) | Proxy mesh (proxy orbit) | MIT |
+| [TRELLIS.2](https://huggingface.co/microsoft/TRELLIS.2-4B) shape and texture VAEs, in Pixal3D's ComfyUI files | Pixal3D's decoders | MIT |
+| [DINOv3](https://github.com/facebookresearch/dinov3) ViT-L, in Pixal3D's ComfyUI files | Pixal3D's image encoder | [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md) |
+| [MoGe-2](https://huggingface.co/Ruicheng/moge-2-vitl-normal) ViT-L | Field of view for Pixal3D | MIT |
+| [TripoSplat](https://github.com/VAST-AI-Research/TripoSplat) ([weights](https://huggingface.co/VAST-AI/TripoSplat)) | Proxy splat (proxy orbit, `-p proxy.model=triposplat`) | MIT |
+| [DINOv3](https://github.com/facebookresearch/dinov3) ViT-H, bundled with TripoSplat | TripoSplat's image encoder | [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md) |
+| [FLUX.2 autoencoder](https://github.com/black-forest-labs/flux2#flux2-autoencoder), bundled with TripoSplat | TripoSplat's image conditioning | Apache-2.0 |
+| [Wan 2.2 Fun Control A14B](https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-Control) ([ComfyUI files](https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged)) | Orbit video (proxy orbit) | Apache-2.0 |
+| [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) ([7B](https://huggingface.co/ByteDance-Seed/SeedVR2-7B), [ComfyUI files](https://huggingface.co/Comfy-Org/SeedVR2)) | Frame upscale (proxy orbit) | Apache-2.0 |
+| [SageAttention](https://github.com/thu-ml/SageAttention) 1.0.6 | Attention kernels (optional) | BSD-3-Clause |
 | [Qwen-Image-Edit-2511](https://huggingface.co/Qwen/Qwen-Image-Edit-2511) ([ComfyUI files](https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI), [Lightning LoRA](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning)) | Background edit | Apache-2.0 |
 | [SAM 3.1](https://huggingface.co/facebook/sam3.1) ([ComfyUI files](https://huggingface.co/Comfy-Org/sam3.1)) | Subject masks | [SAM License](https://huggingface.co/Comfy-Org/sam3.1/blob/main/LICENSE) |
 | [COLMAP](https://colmap.github.io) | Camera poses | BSD-3-Clause |
@@ -176,6 +230,24 @@ including what it says about outputs, before use.
 | [Spark](https://github.com/sparkjsdev/spark), [three.js](https://threejs.org) | Web and WebXR viewer | MIT |
 | [FFmpeg](https://ffmpeg.org) | Frame extraction | LGPL/GPL |
 
+**MiniMax H3's license is restrictive; read it before you run giro with `--model h3`.** As of October 2026 it
+grants use only outside its "Excluded Territories" (the European Union, the United Kingdom, the
+Republic of Korea and the United States), and asks people there to contact MiniMax for a license.
+It also requires a "Powered by MiniMax H3" notice on products built with it, and it does not allow
+using outputs to improve other AI models. This is a summary, not legal advice. Only the H3 orbit
+(`--model h3`) uses H3; the default proxy orbit does not.
+
+**The proxy orbit (`--model wan22-control`, the default) does not use MiniMax H3.** Its models
+allow commercial use in every region. Pixal3D, the TRELLIS.2 VAEs and MoGe-2 are MIT; Tencent's
+own Hugging Face repo for Pixal3D refuses downloads from the EU (a download gate, not a term of the
+MIT license), and the Comfy-Org repack giro uses is not gated. Pixal3D's ComfyUI files and
+TripoSplat's repo both bundle Meta's DINOv3 encoder under the DINOv3 License, the same terms as SAM 3.1's SAM License: royalty-free and
+commercial, but no military, warfare, nuclear, espionage or weapons uses, no use by sanctioned
+parties, no reverse engineering, the license text must go with the weights, and Meta can change the
+terms. The FLUX.2 VAE bundled with TripoSplat is Apache-2.0; the non-commercial license covers
+FLUX.2 [dev] itself, not this VAE. Wan 2.2 Fun Control and SeedVR2 are Apache-2.0. This is a
+summary, not legal advice.
+
 The sample subjects were generated with [Z-Image Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo)
 and [Qwen-Image-2512](https://huggingface.co/Qwen/Qwen-Image-2512) with its
 [Lightning LoRA](https://huggingface.co/lightx2v/Qwen-Image-2512-Lightning), all Apache-2.0.
@@ -185,4 +257,7 @@ and [Qwen-Image-2512](https://huggingface.co/Qwen/Qwen-Image-2512) with its
 
 ## License
 
-giro's own code is [MIT](LICENSE). The license does not cover the third-party tools and models above.
+giro's own code is [MIT](LICENSE), except its ComfyUI nodes in `src/giro/comfy_ext/`, which are
+[GPL-3.0-or-later](src/giro/comfy_ext/LICENSE): they run inside ComfyUI (GPL-3.0) and build on its
+internals. The rest of giro talks to ComfyUI over HTTP. Neither license covers the third-party
+tools and models above.

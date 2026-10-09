@@ -3,7 +3,8 @@ name = "giro"
 version = "0.1.0"
 description = "Experimental research prototype: single image to orbit video to cropped, VR-ready Gaussian splat"
 readme = "README.md"
-license = "MIT"
+license = "MIT AND GPL-3.0-or-later"  # GPL: the ComfyUI nodes in src/giro/comfy_ext/
+license-files = ["LICENSE", "src/giro/comfy_ext/LICENSE"]
 authors = [
     { name = "Kevin Raymond" }
 ]
@@ -29,6 +30,16 @@ build-backend = "uv_build"
 dev = [
     "httpx2>=2.13.1",
     "pytest>=9.1.1",
+]
+direct = [
+    "gsplat>=1.5.3",
+    "lpips>=0.1.4",
+]
+# scripts/evaluate.py: LPIPS and DINOv2 scores (uv run --group eval scripts/evaluate.py ...)
+eval = [
+    "lpips",
+    "torch",
+    "transformers",
 ]
 
 [tool.pytest.ini_options]

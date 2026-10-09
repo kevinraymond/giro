@@ -443,6 +443,13 @@ from giro.api import NewJob  # noqa: E402
 from giro.hero import fit_to_aspect  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _h3_default(monkeypatch):
+    """These tests drive the job runner with fake H3-shaped stages; new jobs would otherwise get the
+    proxy orbit, whose real proxy stage needs ComfyUI on a GPU."""
+    monkeypatch.setattr(stages, "DEFAULT_MODEL", "h3")
+
+
 def test_hero_keeps_the_chosen_region_at_the_video_aspect(tmp_path):
     src = tmp_path / "src.png"
     im = Image.new("RGB", (1000, 800), "black")
@@ -457,7 +464,7 @@ def test_hero_keeps_the_chosen_region_at_the_video_aspect(tmp_path):
 
 def test_new_job_checks_the_video_size_and_crop():
     spec = NewJob(orbit={"width": 1344, "height": 768}, crop=[0.1, 0.0, 0.6, 0.9]).spec()
-    assert spec.orbit == {"width": 1344, "height": 768} and spec.crop == [0.1, 0.0, 0.6, 0.9]
+    assert spec.orbit == {"width": 1344, "height": 768, "model": "h3"} and spec.crop == [0.1, 0.0, 0.6, 0.9]
     with pytest.raises(ValueError, match="multiple of 32"):
         NewJob(orbit={"width": 1000}).spec()
     with pytest.raises(ValueError, match="crop must be"):

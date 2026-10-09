@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """giro ComfyUI extension: video-aware latent previews.
 
 Core Latent2RGBPreviewer shows frame 0 of a video latent. For first-and-last

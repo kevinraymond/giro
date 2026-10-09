@@ -74,6 +74,9 @@ class Stage:
     inputs: tuple[str, ...] = ()   # paths relative to the attempt dir
     outputs: tuple[str, ...] = ()
     gpu_mb: int = 0  # VRAM it needs; 0 means it runs on the CPU and needs no GPU lease
+    # Params read with params.get() but left out of `defaults`, so attempts from before they
+    # existed keep their stage key; a job may still set them.
+    extra_params: tuple[str, ...] = ()
 
     def run(self, attempt: Path, params: dict[str, Any], ctx: Ctx) -> None:
         raise NotImplementedError

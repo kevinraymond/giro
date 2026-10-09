@@ -319,17 +319,19 @@ class Runner:
             on_preview=lambda st, p: self._emit(attempt, "preview", st, path=str(Path(p).resolve().relative_to(root))),
             on_start=lambda st: self._emit(attempt, "start", st),
         )
+        model = orbit.get("model")
+        proxy_mode = model == stages.PROXY_MODEL
         restart = True
         fallback_tried = False  # for the current COLMAP reconstruction
         while restart:  # once more after a pose fallback or gap fill; unchanged stages skip themselves
             restart = False
-            for order, stage in enumerate(stages.PIPELINE):
+            for order, stage in enumerate(stages.pipeline(model)):
                 attempt.stage = stage.name
                 job.save()
                 if stage is stages.ORBIT:
                     params = spec.orbit | {"seed": attempt.seed}
                 else:
-                    params = attempt.stage_params(spec, stage.name)
+                    params = stages.mode_params(model, stage.name) | attempt.stage_params(spec, stage.name)
                     if stage.name == "gate" and attempt.override == "pass":
                         params = params | {"enforce": False}  # keep the measurements, ignore the verdict
                 try:
@@ -348,7 +350,8 @@ class Runner:
                     if stopped():  # Ctrl-C also reaches the stage's subprocess
                         attempt.status = "discarded" if attempt.seed in self._stop else "cancelled"
                         return
-                    if isinstance(e, stages.Rejected) and stage.name == "gate":
+                    # A proxy orbit's cameras come from its path: no pose fallback or gap fill, a new seed.
+                    if isinstance(e, stages.Rejected) and stage.name == "gate" and not proxy_mode:
                         try:
                             if stages.poses.active_source(path) == "fallback":
                                 # The fallback's cameras failed too: back to COLMAP's, so the gate's

@@ -14,6 +14,13 @@ from giro.comfy import server
 from giro.job import Attempt, Job, JobSpec
 from giro.stages import Rejected, Stage
 
+
+@pytest.fixture(autouse=True)
+def _h3_default(monkeypatch):
+    """These tests drive the job runner with fake H3-shaped stages; new jobs would otherwise get the
+    proxy orbit, whose real proxy stage needs ComfyUI on a GPU."""
+    monkeypatch.setattr(stages, "DEFAULT_MODEL", "h3")
+
 RUNS: list[tuple[int, str]] = []  # (seed, stage) of every stage that actually ran
 
 

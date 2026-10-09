@@ -14,6 +14,13 @@ from giro.stages import Ctx, Rejected, Stage, StageFailed
 from giro.stages.gate import Gate, analyze_ring
 
 
+@pytest.fixture(autouse=True)
+def _h3_default(monkeypatch):
+    """These tests drive the job runner with fake H3-shaped stages; new jobs would otherwise get the
+    proxy orbit, whose real proxy stage needs ComfyUI on a GPU."""
+    monkeypatch.setattr(stages, "DEFAULT_MODEL", "h3")
+
+
 def _look_at(center: np.ndarray, target=np.zeros(3), up=np.array([0.0, 1.0, 0.0])):
     """World-to-camera (qvec, tvec) for a camera at `center` looking at `target` (COLMAP axes)."""
     z = target - center

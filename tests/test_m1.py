@@ -23,6 +23,23 @@ def test_build_sets_named_inputs_and_rejects_unknown():
         workflows.build("orbit_video", nope=1)
 
 
+def test_with_lora_sits_between_the_model_loader_and_its_readers():
+    prompt = workflows.with_lora(workflows.build("orbit_video", seed=7), "h3/orbit.safetensors", 0.8)
+    assert prompt["lora"]["inputs"] == {"model": ["unet", 0], "lora_name": "h3/orbit.safetensors", "strength_model": 0.8}
+    assert prompt["guider"]["inputs"]["model"] == prompt["sigmas"]["inputs"]["model"] == ["lora", 0]
+
+
+def test_wan_orbit_splits_the_steps_between_its_two_models():
+    prompt = workflows.build_orbit("wan22", image="giro/hero.png", seed=7, steps=12, length=workflows.snap_length(80, "wan22"))
+    assert prompt["condition"]["inputs"]["length"] == 81
+    assert prompt["condition"]["inputs"]["start_image"] == prompt["condition"]["inputs"]["end_image"] == ["hero", 0]
+    assert (prompt["sample"]["inputs"]["steps"], prompt["sample"]["inputs"]["end_at_step"]) == (12, 6)
+    assert (prompt["sample_low"]["inputs"]["steps"], prompt["sample_low"]["inputs"]["start_at_step"]) == (12, 6)
+    workflows.with_lora(prompt, "wan22/low.safetensors", loader="unet_low")
+    assert prompt["shift_low"]["inputs"]["model"] == ["lora_low", 0] and prompt["shift"]["inputs"]["model"] == ["unet", 0]
+    assert workflows.build_orbit("h3", seed=7, steps=8)["sigmas"]["inputs"]["steps"] == 8
+
+
 def test_ssim_identity_and_difference():
     rng = np.random.default_rng(0)
     a = rng.random((64, 48))

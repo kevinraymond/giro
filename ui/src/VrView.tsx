@@ -12,6 +12,7 @@ import * as THREE from "three";
 
 export interface VrStats {
   label: string;
+  primer: Primer;
   target_hz: number | null; // what the page asked the headset for (?hz=)
   scale: number; // WebXR framebuffer scale (?scale=)
   max_std_dev: number;
@@ -34,11 +35,18 @@ export interface VrItem {
   url: string;
   label: string;
   maxStdDev?: number; // how far out each Gaussian is drawn (Spark default sqrt(8) = 2.83)
+  primer?: Primer;
 }
+
+/** What else in the pass writes depth (Spark's splats never do). fosfora measured on the same
+ *  Quest that blended sprites drew ~3x cheaper when any opaque depth-writing draw was in the pass
+ *  (an Adreno pass-mode heuristic, presumably). "floor": the floor ring writes depth, as it always
+ *  did; "none": nothing writes depth; "opaque": nothing but a 1 mm opaque quad under the floor. */
+export type Primer = "floor" | "none" | "opaque";
 
 /** One splat, or a benchmark sequence: after Enter VR each item is shown in turn, warmed up
  *  for 3 s and measured for 10 s, and its frame times are reported under its label. */
-export default function VrView({ items }: { items: VrItem[] }) {
+export default function VrView({ items, next }: { items: VrItem[]; next?: { href: string; label: string } }) {
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Loading the splat…");
   const [stats, setStats] = useState<VrStats | null>(null);
@@ -46,10 +54,11 @@ export default function VrView({ items }: { items: VrItem[] }) {
 
   useEffect(() => {
     const el = host.current!;
-    // Options: ?hz=72 asks the headset for that refresh rate; ?scale=0.75 renders fewer pixels.
+    // Options: ?hz=90 asks the headset for that refresh rate; ?scale=1 renders every pixel.
+    // The defaults are what held 72 fps on the Quest 3 (docs/FINDINGS.md, "VR on Quest 3").
     const opts = new URLSearchParams(location.hash.split("?")[1] ?? "");
-    const targetHz = opts.get("hz") ? Number(opts.get("hz")) : null;
-    const scale = Number(opts.get("scale") ?? 1);
+    const targetHz = Number(opts.get("hz") ?? 72);
+    const scale = Number(opts.get("scale") ?? 0.6);
     const renderer = new THREE.WebGLRenderer({ antialias: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     el.appendChild(renderer.domElement);
@@ -57,7 +66,9 @@ export default function VrView({ items }: { items: VrItem[] }) {
     scene.background = new THREE.Color(0x101214);
     const spark = new SparkRenderer({ renderer });
     scene.add(spark);
-    const defaultStdDev = spark.maxStdDev;
+    // How far out each Gaussian is drawn: Spark's default sqrt(8) costs fill for little visible gain.
+    const defaultStdDev = Number(opts.get("std") ?? 2);
+    spark.maxStdDev = defaultStdDev;
 
     // Controllers move the camera's parent: the rig.
     const rig = new THREE.Group();
@@ -72,6 +83,43 @@ export default function VrView({ items }: { items: VrItem[] }) {
     );
     floor.position.set(0, 0.002, -DISTANCE);
     scene.add(floor);
+    const primer = new THREE.Mesh(new THREE.PlaneGeometry(0.001, 0.001).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+    primer.position.set(0, -0.01, -DISTANCE);
+    scene.add(primer);
+    const setPrimer = (p: Primer) => {
+      floor.material.depthWrite = p === "floor";
+      primer.visible = p === "opaque";
+    };
+    setPrimer(items[0].primer ?? "floor");
+
+    // Status inside VR (nobody wearing the headset sees the page): a text panel to the left of the
+    // subject. It is blended and writes no depth, so it does not change what the primer test measures.
+    const panelCanvas = document.createElement("canvas");
+    panelCanvas.width = 1024;
+    panelCanvas.height = 256;
+    const panelTexture = new THREE.CanvasTexture(panelCanvas);
+    panelTexture.colorSpace = THREE.SRGBColorSpace;
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.2),
+      new THREE.MeshBasicMaterial({ map: panelTexture, transparent: true, depthWrite: false, depthTest: false }));
+    panel.renderOrder = 10;
+    panel.position.set(-0.9, 1.5, -DISTANCE + 0.2);
+    panel.rotation.y = 0.5;
+    scene.add(panel);
+    const show = (lines: string[]) => {
+      const g = panelCanvas.getContext("2d")!;
+      g.clearRect(0, 0, panelCanvas.width, panelCanvas.height);
+      g.fillStyle = "rgba(16, 18, 20, 0.85)";
+      g.fillRect(0, 0, panelCanvas.width, panelCanvas.height);
+      g.fillStyle = "#e8eaed";
+      g.font = "40px sans-serif";
+      lines.slice(0, 4).forEach((line, i) => g.fillText(line, 24, 60 + i * 60));
+      panelTexture.needsUpdate = true;
+    };
+    const say = (text: string) => {
+      setStatus(text);
+      show([items.length > 1 ? `Benchmark: ${items.length} splats` : items[0].label, text]);
+    };
+    say("Loading the splat…");
 
     let mesh: SplatMesh | null = null;
     let splats = 0;
@@ -93,16 +141,16 @@ export default function VrView({ items }: { items: VrItem[] }) {
       mesh = next;
       splats = next.packedSplats?.numSplats ?? 0;
       label = item.label;
-      setStatus(`${item.label}: ${splats.toLocaleString()} splats`);
+      say(`${item.label}: ${splats.toLocaleString()} splats`);
     }
-    load(items[0]).catch((e: unknown) => setStatus(`Could not load the splat: ${e}`));
+    load(items[0]).catch((e: unknown) => say(`Could not load the splat: ${e}`));
 
     const sequence = items.length > 1;
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
     async function runSequence() {
-      for (const item of items) {
+      for (const [i, item] of items.entries()) {
         if (!alive || !renderer.xr.isPresenting) return;
-        setStatus(`${item.label}: loading`);
+        say(`${i + 1}/${items.length} ${item.label}: loading`);
         try {
           await load(item);
         } catch (e) {
@@ -112,12 +160,15 @@ export default function VrView({ items }: { items: VrItem[] }) {
           continue;
         }
         spark.maxStdDev = item.maxStdDev ?? defaultStdDev;
+        setPrimer(item.primer ?? "floor");
+        say(`${i + 1}/${items.length} ${item.label}: warming up`);
         await wait(3000); // sorting settles, GPU caches warm
         frames.length = 0;
+        say(`${i + 1}/${items.length} ${item.label}: measuring 10 s`);
         await wait(10000);
         report();
       }
-      setStatus(`Done: ${items.length} measurements sent. You can exit VR.`);
+      say(next ? `Done. Exit VR, then tap "${next.label}" on the page.` : `Done: ${items.length} measurements sent. You can exit VR.`);
     }
 
     const xr = new SparkXr({
@@ -135,7 +186,7 @@ export default function VrView({ items }: { items: VrItem[] }) {
         if (targetHz && session?.updateTargetFrameRate) session.updateTargetFrameRate(targetHz).catch(() => {});
         rig.position.set(0, 0, 0);
         rig.quaternion.identity();
-        if (sequence) runSequence().catch((e: unknown) => setStatus(`Stopped: ${e}`));
+        if (sequence) runSequence().catch((e: unknown) => say(`Stopped: ${e}`));
       },
       controllers: {
         moveDirection: true,
@@ -160,7 +211,7 @@ export default function VrView({ items }: { items: VrItem[] }) {
       const interval = hz ? 1000 / hz : q(0.5);
       const total = frames.reduce((s, x) => s + x, 0);
       const s: VrStats = {
-        label, target_hz: targetHz, scale, max_std_dev: Math.round(spark.maxStdDev * 100) / 100, splats, frames: frames.length, seconds: Math.round(total / 10) / 100,
+        label, primer: primer.visible ? "opaque" : floor.material.depthWrite ? "floor" : "none", target_hz: targetHz, scale, max_std_dev: Math.round(spark.maxStdDev * 100) / 100, splats, frames: frames.length, seconds: Math.round(total / 10) / 100,
         fps: Math.round((1000 * frames.length / total) * 10) / 10,
         p50_ms: Math.round(q(0.5) * 100) / 100, p95_ms: Math.round(q(0.95) * 100) / 100,
         p99_ms: Math.round(q(0.99) * 100) / 100,
@@ -201,6 +252,7 @@ export default function VrView({ items }: { items: VrItem[] }) {
         scene.remove(mesh);
         mesh.dispose();
       }
+      panelTexture.dispose();
       renderer.dispose();
       renderer.domElement.remove();
       xr.element?.remove();
@@ -220,6 +272,7 @@ export default function VrView({ items }: { items: VrItem[] }) {
             localhost (adb reverse), then press Enter VR.
           </p>
         )}
+        {next && <a href={next.href}>{next.label}</a>}
         {stats && (
           <span className="small num">
             {stats.fps} fps · p95 {stats.p95_ms} ms{stats.display_hz ? ` · ${stats.display_hz} Hz` : ""} · {stats.slow_frames} slow

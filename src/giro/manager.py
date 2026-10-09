@@ -334,7 +334,8 @@ class Manager:
         for stage, values in params.items():
             if stage not in stages.BY_NAME or stage == stages.ORBIT.name:
                 raise ActionError(f"no per-attempt params for stage {stage!r}")
-            unknown = set(values) - set(stages.BY_NAME[stage].defaults)
+            known = stages.BY_NAME[stage]
+            unknown = set(values) - set(known.defaults) - set(known.extra_params)
             if unknown:
                 raise ActionError(f"{stage} has no params {sorted(unknown)}")
         attempt = job.attempt(seed)

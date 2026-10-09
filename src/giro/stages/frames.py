@@ -65,11 +65,18 @@ class Dedup(Stage):
     }
     inputs = ("frames_raw",)
     outputs = ("frames", "dedup.json")
+    # Also read: "keep_all" (default False) keeps every frame. The proxy orbit sets it: each of
+    # its frames has a known camera, and the similarity test drops frames of a small subject in a
+    # still room (docs/FINDINGS.md, "Proxy orbit").
+    extra_params = ("keep_all",)
 
     def run(self, attempt: Path, params: dict[str, Any], ctx: Ctx) -> None:
         raw = sorted((attempt / "frames_raw").glob("*.png"))
         if len(raw) < 3:
             raise StageFailed(f"only {len(raw)} frames in frames_raw")
+        if params.get("keep_all"):
+            self._write(attempt, raw, list(range(len(raw))), 0, len(raw) - 1, len(raw), params, ctx)
+            return
         gray = []
         for i, p in enumerate(raw):
             gray.append(_gray(p, params["analysis_width"]))
@@ -101,7 +108,10 @@ class Dedup(Stage):
             marks = np.linspace(0.0, change[-1], params["target"])
             picks = np.searchsorted(change, marks).clip(0, len(kept) - 1)
             selected = sorted({kept[j] for j in picks})
+        self._write(attempt, raw, selected, start, end, len(kept), params, ctx)
 
+    def _write(self, attempt: Path, raw: list[Path], selected: list[int], start: int, end: int, n_kept: int,
+               params: dict[str, Any], ctx: Ctx) -> None:
         out = attempt / "frames"
         if out.exists():
             shutil.rmtree(out)
@@ -117,8 +127,8 @@ class Dedup(Stage):
         ctx.metric("n_raw", len(raw))
         ctx.metric("trimmed_start", start)
         ctx.metric("trimmed_end", len(raw) - 1 - end)
-        ctx.metric("near_duplicates", (end - start + 1) - len(kept))
+        ctx.metric("near_duplicates", (end - start + 1) - n_kept)
         ctx.metric("n_frames", len(selected))
-        if len(selected) < params["target"]:
+        if len(selected) < params["target"] and not params.get("keep_all"):
             ctx.log(f"{len(selected)} distinct frames, fewer than the {params['target']} target; a longer video gives more views")
         ctx.progress(1.0, f"{len(selected)} frames kept")

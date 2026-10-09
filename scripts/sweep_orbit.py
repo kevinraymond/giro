@@ -7,6 +7,10 @@ GPU while passing attempts train on the other.
     uv run scripts/sweep_orbit.py data/samples/adventurer_7.png --seeds 1,2,3,4 \\
         --cells 124x20,192x20,158x20,124x8,192x8
 
+A cell is LENGTHxSTEPS, optionally followed by orbit params: 73x28:width=768:height=768:lora=h3/x.safetensors.
+prompt=frozen stands for the H3 360 orbit LoRA's prompt, prompt=wan_orbit for the Wan orbit LoRA's
+(workflows.FROZEN_ORBIT_PROMPT, WAN_ORBIT_PROMPT); model=wan22 runs Wan 2.2 I2V instead of MiniMax H3.
+
 Writes data/sweeps/<stamp>/: one job per cell, summary.txt, results.json and
 sheets/ (a 16-frame contact sheet per attempt, to check the gate by eye).
 """
@@ -39,10 +43,10 @@ def contact_sheet(frames_raw: Path, dest: Path) -> None:
 
 def summarize(jobs: list[Job]) -> tuple[str, list[dict]]:
     rows, lines = [], []
-    lines.append(f"{'cell':<10} {'pass':>5} {'video s':>8} {'views':>6} {'sweep':>6} {'PSNR':>6}  rejections")
+    lines.append(f"{'cell':<24} {'pass':>5} {'video s':>8} {'views':>6} {'sweep':>6} {'PSNR':>6}  rejections")
     for job in jobs:
         o = job.spec.orbit
-        cell = f"{o['length']}x{o['steps']}"
+        cell = job.path.name.split("-", 2)[-1]  # the cell's tag, without the job's timestamp
         video_s, views, sweeps, psnrs, reasons = [], [], [], [], []
         for a in job.attempts:
             metrics_path = job.attempt_dir(a.seed) / "metrics.json"
@@ -64,9 +68,9 @@ def summarize(jobs: list[Job]) -> tuple[str, list[dict]]:
             return f"{statistics.mean(xs):.0f}" if xs else "-"
 
         passed = sum(a.status == "passed" for a in job.attempts)
-        lines.append(f"{cell:<10} {passed:>2}/{len(job.attempts):<2} {mean(video_s):>8} {mean(views):>6} "
+        lines.append(f"{cell:<24} {passed:>2}/{len(job.attempts):<2} {mean(video_s):>8} {mean(views):>6} "
                      f"{mean(sweeps):>6} {(f'{statistics.mean(psnrs):.1f}' if psnrs else '-'):>6}")
-        lines += [f"{'':<12}{r}" for r in reasons]
+        lines += [f"{'':<26}{r}" for r in reasons]
     return "\n".join(lines), rows
 
 
@@ -97,11 +101,24 @@ def main() -> int:
 
     jobs = [Job.load(d) for d in sorted(args.out.iterdir()) if (d / "job.json").exists()] if args.resume else []
     for cell in [] if args.resume else args.cells.split(","):
-        length, steps = (int(x) for x in cell.split("x"))
+        size, *extra = cell.split(":")
+        length, steps = (int(x) for x in size.split("x"))
+        orbit: dict[str, object] = {"steps": steps}
+        for pair in extra:
+            k, _, raw = pair.partition("=")
+            try:
+                orbit[k] = json.loads(raw)
+            except json.JSONDecodeError:
+                orbit[k] = raw
+        orbit["length"] = workflows.snap_length(length, str(orbit.get("model") or "h3"))
+        prompts = {"frozen": workflows.FROZEN_ORBIT_PROMPT, "wan_orbit": workflows.WAN_ORBIT_PROMPT}
+        if orbit.get("prompt") in prompts:
+            orbit["prompt"] = prompts[str(orbit["prompt"])]
         spec = JobSpec(image=str(args.image.resolve()), want=len(seeds), max_attempts=len(seeds), seeds=seeds,
-                       orbit={"length": workflows.snap_length(length), "steps": steps},
-                       video_gpus=video_gpus, post_gpus=post_gpus)
-        jobs.append(Job.create(args.out, spec, f"L{length}-S{steps}"))
+                       orbit=orbit, video_gpus=video_gpus, post_gpus=post_gpus)
+        tag = (f"-{orbit['model']}" if orbit.get("model") else "") + ("-lora" if orbit.get("lora") else "")
+        size_tag = f"-{orbit['width']}x{orbit['height']}" if "width" in orbit else ""
+        jobs.append(Job.create(args.out, spec, f"L{length}-S{steps}{size_tag}{tag}"))
     log(f"sweep {args.out}: {len(jobs)} cells x {len(seeds)} seeds")
     t0 = time.monotonic()
     jobs = asyncio.run(run_jobs(jobs, log, sorted(set(video_gpus) | set(post_gpus))))
@@ -110,11 +127,10 @@ def main() -> int:
     sheets = args.out / "sheets"
     sheets.mkdir(exist_ok=True)
     for job in jobs:
-        o = job.spec.orbit
         for a in job.attempts:
             frames_raw = job.attempt_dir(a.seed) / "frames_raw"
             if any(frames_raw.glob("*.png")):
-                contact_sheet(frames_raw, sheets / f"L{o['length']}-S{o['steps']}_s{a.seed}_{a.status}.png")
+                contact_sheet(frames_raw, sheets / f"{job.path.name.split('-', 2)[-1]}_s{a.seed}_{a.status}.png")
     table, rows = summarize(jobs)
     (args.out / "summary.txt").write_text(table + "\n")
     (args.out / "results.json").write_text(json.dumps(rows, indent=2) + "\n")

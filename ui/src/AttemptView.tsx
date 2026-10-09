@@ -132,7 +132,7 @@ function ResultTab({ detail }: { detail: AttemptDetail }) {
   const exp = detail.metrics.export ?? {};
   const canon = detail.metrics.canonicalize ?? {};
   const n = Number(exp.n_gaussians ?? info?.count ?? 0);
-  const budget = Number(exp.vr_budget ?? 500000);
+  const budget = Number(exp.vr_budget ?? 150000);
   const v = attempt.seconds ?? 0;
   return (
     <div className="result">

@@ -16,8 +16,10 @@ export const STAGES: { name: string; label: string; short: string }[] = [
   { name: "export", label: "Exporting", short: "Export" },
 ];
 
-// Steps that run only after the gate rejects an attempt, shown under the stage they redo.
+// Steps shown under another stage: the proxy orbit's proxy (before its video), and those that run
+// only after the gate rejects an attempt (under the stage they redo).
 const RECOVERY: Record<string, { label: string; under: string }> = {
+  proxy: { label: "Building a 3D proxy of the subject", under: "orbit_video" },
   poses_fallback: { label: "Recovering the cameras another way", under: "poses_colmap" },
   gapfill: { label: "Regenerating a missing arc", under: "orbit_video" },
 };

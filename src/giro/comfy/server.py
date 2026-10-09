@@ -22,7 +22,8 @@ from pathlib import Path
 from giro import gpu as gpu_mod
 
 ROOT = Path(__file__).resolve().parents[3]
-COMFY_DIR = ROOT / "vendor" / "comfyui"
+# GIRO_COMFY_DIR: another ComfyUI checkout with its own .venv (e.g. a newer one being tried)
+COMFY_DIR = Path(os.environ["GIRO_COMFY_DIR"]).resolve() if os.environ.get("GIRO_COMFY_DIR") else ROOT / "vendor" / "comfyui"
 MODEL_PATHS = ROOT / "scripts" / "extra_model_paths.yaml"
 RUN_DIR = ROOT / "data" / "run"
 
@@ -60,6 +61,10 @@ def start(gpu: int, timeout: float = 120.0) -> str:
             "--extra-model-paths-config", str(MODEL_PATHS),
             "--preview-method", "latent2rgb", "--preview-size", "1024",
             "--disable-auto-launch",
+            # GIRO_COMFY_SAGE=1: SageAttention kernels (scripts/comfy-lock.txt). Wan 1.5x and H3 1.3x
+            # faster with quality within seed noise, but Qwen-Image-Edit (the edit stage) then returns
+            # black images, and the flag is global to the ComfyUI instance, so it stays opt-in.
+            *(["--use-sage-attention"] if os.environ.get("GIRO_COMFY_SAGE") == "1" else []),
         ],
         cwd=COMFY_DIR, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
     )
