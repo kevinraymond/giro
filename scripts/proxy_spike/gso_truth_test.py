@@ -52,6 +52,9 @@ ap.add_argument("--split", choices=["train", "held"], default="train",
                 help="lora/joint: generate at the training cameras or at the held-out ones (angles-<tag>-held: self-consistency)")
 ap.add_argument("--pairs", default="Tc:true-held,Gc:lora-held,Jc-500:joint-500-held,Wc:wan-held",
                 help="selfeval: RUN:TAG,... = OUT/NAME/RUN/final.ply scored against the views in OUT/NAME/angles-TAG")
+ap.add_argument("--lora-low", default="", help="wan: a LoRA on the low-noise model (Route C, under ComfyUI's loras)")
+ap.add_argument("--lora-high", default="", help="wan: a LoRA on the high-noise model (Route C, under ComfyUI's loras)")
+ap.add_argument("--wan-tag", default="", help="wan: outputs go to OUT/NAME/wan<TAG>, angles-wan<TAG>[-held]")
 ap.add_argument("--hold-every", type=int, default=5, help="wan: every Nth frame (from 2) is held out of training")
 ap.add_argument("--no-lightning", action="store_true", help="joint: 25 steps, cfg 3 instead of Lightning's 4")
 args = ap.parse_args()
@@ -310,7 +313,7 @@ elif args.step == "wan":
     from texture_common import write_points_ply
 
     WW, WH = 576, 768
-    wdir = out / "wan"
+    wdir, wt = out / f"wan{args.wan_tag}", f"wan{args.wan_tag}"
     (wdir / "silhouettes").mkdir(parents=True, exist_ok=True)
     ply = wdir / "proxy.ply"
     if not ply.exists():
@@ -331,7 +334,11 @@ elif args.step == "wan":
                         "wan22-control", video="fun_control", steps=20, prompt=workflows.PROXY_ORBIT_PROMPT, width=WW, height=WH,
                         length=81, seed=7, image=h, proxy=str(ply.resolve()), cameras=json.dumps([c.render_json() for c in cams]),
                         silhouette_paths=json.dumps([str((wdir / "silhouettes" / f"{i:05d}.png").resolve()) for i in range(81)]),
-                        depth_prefix=f"giro/truth_wan/{args.name}/depth", output_prefix=f"giro/truth_wan/{args.name}/frame")
+                        depth_prefix=f"giro/truth_wan/{args.name}/depth", output_prefix=f"giro/truth_wan/{args.name}{args.wan_tag}/frame")
+                    if args.lora_low:
+                        workflows.with_lora(wf, args.lora_low, 1.0, "unet_low")
+                    if args.lora_high:
+                        workflows.with_lora(wf, args.lora_high, 1.0, "unet")
                     done = None
                     async for ev in comfy.run(wf):
                         if isinstance(ev, Done):
@@ -353,10 +360,10 @@ elif args.step == "wan":
             sil = np.asarray(Image.open(sp).convert("L").resize((img.shape[1], img.shape[0]))) > 127
             fg &= ndimage.binary_dilation(sil, iterations=12)
         held_frame = i % args.hold_every == 2
-        save_view(out / ("angles-wan-held" if held_frame else "angles-wan"), n, (img * fg[..., None]).astype(np.uint8), fg)
+        save_view(out / (f"angles-{wt}-held" if held_frame else f"angles-{wt}"), n, (img * fg[..., None]).astype(np.uint8), fg)
         (ho_c if held_frame else tr_c)[n] = PoseCamera.of(cam)
-    write_cams(out / "angles-wan", tr_c)
-    write_cams(out / "angles-wan-held", ho_c)
+    write_cams(out / f"angles-{wt}", tr_c)
+    write_cams(out / f"angles-{wt}-held", ho_c)
     print(f"{args.name}: {len(tr_c)} Wan frames to train on, {len(ho_c)} held out", flush=True)
 
 elif args.step == "selfeval":
