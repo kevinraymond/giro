@@ -55,10 +55,12 @@ was trained on, seeds 1–4 with no rerolls:
 MiniMax H3's license excludes the US, EU, UK and South Korea, so giro has a second way to make the
 orbit from permissively licensed models (`model=wan22-control`):
 
-1. Pixal3D (MIT; the default since Oct 9, see below) turns the masked hero into a mesh, the *proxy*,
-   sampled into surface Gaussians; until then TripoSplat (MIT, `proxy.model=triposplat`) made a rough
-   splat in about 10 s per seed. giro runs 4 seeds and keeps the one whose silhouette best matches
-   the hero.
+1. A 3D model turns the masked hero into the *proxy*, picked by the subject's kind (`--kind`, the
+   new-job form's "Subject"; see below): for a person or character (the default) TripoSplat (MIT,
+   `proxy.model=triposplat`) makes a rough splat in about 10 s per seed; for an object Pixal3D (MIT,
+   `proxy.model=pixal3d`) makes a mesh, sampled into surface Gaussians. giro runs 4 seeds and keeps
+   the one whose silhouette best matches the hero (with Pixal3D, which is pixel-aligned, every seed
+   matches within 0.005 IoU, so this pick is close to random).
 2. giro fits the hero's camera to the proxy on the CPU (about 5 s): silhouette IoU over yaw and
    pitch, distance and framing from the silhouettes' boxes, then a Nelder-Mead refinement. Front
    and back share a silhouette, so the color against the hero breaks the tie. On the adventurer
@@ -187,8 +189,17 @@ Where it stands, and what is next (Oct 4):
   came out about as wide as it is long (proxy box 0.98 x 0.98 in plan, an Abrams is ~2.3:1) with
   the barrel bent 45-90° off the hull, and Wan follows that depth; Pixal3D's hull is long and the
   barrel in line. Its proxy-only likeness was lower than TripoSplat's on the adventurer and the
-  raincoat (0.56 and 0.57 against 0.75 and 0.66, Oct 4), but their orbits looked right by eye. The
-  video also starts from the hero cut out onto black (`orbit_video.hero_bg`, "keep" for the old
+  raincoat (0.56 and 0.57 against 0.75 and 0.66, Oct 4).
+- Corrected the same day: Pixal3D had only been run end to end on the tank and the scooter. On the
+  three characters (same defaults, seed 1, both proxies) Pixal3D gave the sharper hero view
+  (adventurer 26.1 dB / 0.050 against 22.0 / 0.078, knight 23.3 / 0.042 against 21.1 / 0.069,
+  raincoat 22.8 / 0.038 against 20.7 / 0.051) but less of the hero's look around the ring (0.66,
+  0.71, 0.51 against 0.71, 0.85, 0.59) and from above, and by eye worse backs: a pointed hood and a
+  cord down the adventurer's back, the knight's back plate smeared into the skirt. So the proxy is
+  picked by the subject's kind: TripoSplat for people and characters (the default), Pixal3D for
+  objects (vehicles, machines, props). Pixal3D's paper (arXiv 2605.10922) already beats TripoSG,
+  Direct3D-S2, TRELLIS and Hunyuan3D-2.1 on single-image shape, so giro did not test those.
+- The video also starts from the hero cut out onto black (`orbit_video.hero_bg`, "keep" for the old
   behavior): a floor and wall behind people tilted oddly in the views from above, and the proxy's
   depth is drawn on black anyway.
 - Next: the 135K-splat exports in the headset; and a way to

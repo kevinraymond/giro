@@ -38,7 +38,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
@@ -69,6 +69,7 @@ class NewJob(BaseModel):
     seeds: list[int] = []
     height_m: float | None = Field(None, gt=0.01, le=100)
     subject: str | None = None
+    kind: Literal["person", "object"] | None = None  # proxy orbit: picks the proxy model (stages.PROXY_BY_KIND)
     orbit: dict[str, Any] = {}                 # orbit_video params (length, steps, width, height, prompt)
     crop: list[float] | None = Field(None, min_length=4, max_length=4)  # (left, top, right, bottom) of the image, 0-1
     params: dict[str, dict[str, Any]] = {}     # per-stage overrides
@@ -82,6 +83,8 @@ class NewJob(BaseModel):
             params.setdefault("canonicalize", {})["height_m"] = self.height_m
         if self.subject:
             params.setdefault("masks", {})["subject_prompt"] = self.subject
+        if self.kind:
+            params.setdefault("proxy", {})["model"] = stages.PROXY_BY_KIND[self.kind]
         for stage, values in params.items():
             if stage not in stages.BY_NAME:
                 raise ValueError(f"unknown stage {stage!r}")

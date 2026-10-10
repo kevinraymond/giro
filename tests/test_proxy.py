@@ -46,7 +46,19 @@ def test_proxy_mode_adds_the_proxy_stage_and_its_params():
     assert stages.pipeline(None) is stages.PIPELINE
     assert stages.mode_params(stages.PROXY_MODEL, "poses_colmap") == {"mapper": "path"}
     assert stages.mode_params("h3", "poses_colmap") == {}
-    assert stages.mode_params(stages.PROXY_MODEL, "proxy") == {"model": "pixal3d"}
+    assert stages.mode_params(stages.PROXY_MODEL, "proxy") == {"model": "triposplat"}
+
+
+def test_the_subject_kind_picks_the_proxy_model():
+    from giro.api import NewJob
+    from giro.cli import _stage_params
+    assert stages.PROXY_BY_KIND == {"person": "triposplat", "object": "pixal3d"}
+    assert NewJob(kind="object").spec().params["proxy"] == {"model": "pixal3d"}
+    assert "proxy" not in NewJob().spec().params
+    args = type("Args", (), {"param": [], "kind": "object"})()
+    assert _stage_params(args) == {"proxy": {"model": "pixal3d"}}
+    args.param = ["proxy.model=trellis2"]  # an explicit -p wins over --kind
+    assert _stage_params(args) == {"proxy": {"model": "trellis2"}}
 
 
 def test_proxy_orbit_starts_from_the_hero_cut_out_on_black(tmp_path):

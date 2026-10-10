@@ -83,6 +83,7 @@ export function NewJob() {
   const [want, setWant] = useState(3);
   const [maxAttempts, setMaxAttempts] = useState(6);
   const [subject, setSubject] = useState("");
+  const [kind, setKind] = useState<"person" | "object">("person");
   const [length, setLength] = useState("");
   const [steps, setSteps] = useState("");
   const [mode, setMode] = useState<"h3" | "proxy">("proxy");
@@ -199,6 +200,7 @@ export function NewJob() {
         max_attempts: Math.max(want, maxAttempts),
         height_m: height ? Number(height) : undefined,
         subject: subject || undefined,
+        kind: mode === "proxy" ? kind : undefined,
         orbit: orbitAll,
         crop: moved && crop ? [crop.left, crop.top, crop.left + crop.width, crop.top + crop.height] : undefined,
         seeds: seeds.split(/[\s,]+/).filter(Boolean).map(Number),
@@ -326,6 +328,20 @@ export function NewJob() {
                 : "A rough 3D proxy of the subject sets the camera path, so the views from above are real. As good as H3 or better on the hero view, sharper, and its models allow commercial use everywhere."}
             </small>
           </label>
+          {mode === "proxy" && (
+            <label className="field">
+              <span>Subject</span>
+              <select value={kind} onChange={(e) => setKind(e.target.value as "person" | "object")}>
+                <option value="person">A person or character (default)</option>
+                <option value="object">An object: a vehicle, machine or prop</option>
+              </select>
+              <small className="muted">
+                {kind === "person"
+                  ? "TripoSplat makes the proxy: cleaner backs on people, clothes and armor."
+                  : "Pixal3D makes the proxy: truer hard-surface shapes (hulls, frames, wheels), but worse backs on people."}
+              </small>
+            </label>
+          )}
           <div className="field-row">
             <label className="field">
               <span>Video shape</span>

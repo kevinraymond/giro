@@ -56,6 +56,8 @@ def _stage_params(args: argparse.Namespace) -> dict[str, dict[str, object]]:
         params.setdefault("canonicalize", {}).setdefault("height_m", args.height_m)
     if getattr(args, "subject", None):
         params.setdefault("masks", {}).setdefault("subject_prompt", args.subject)
+    if getattr(args, "kind", None):
+        params.setdefault("proxy", {}).setdefault("model", stages.PROXY_BY_KIND[args.kind])
     return params
 
 
@@ -269,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
     def subject_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("--height-m", type=float, help="subject height in meters for the exported splat (default 1.7)")
         p.add_argument("--subject", help="what SAM should segment (default 'main subject, held object:2')")
+        p.add_argument("--kind", choices=sorted(stages.PROXY_BY_KIND),
+                       help=f"proxy orbit: the subject's kind, which picks the proxy model (default {stages.DEFAULT_KIND}: "
+                            + ", ".join(f"{k} {m}" for k, m in stages.PROXY_BY_KIND.items()) + ")")
 
     def attempt_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("image", type=Path)

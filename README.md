@@ -37,8 +37,9 @@ Passing seeds are ranked by held-out PSNR.
 
 There are two ways to make the orbit:
 
-- **The proxy orbit** (the default; its models are licensed for use everywhere): Pixal3D
-  turns the hero into a 3D *proxy* mesh (TripoSplat with `-p proxy.model=triposplat`), giro renders
+- **The proxy orbit** (the default; its models are licensed for use everywhere): TripoSplat
+  turns the hero into a 3D *proxy* (Pixal3D's mesh with `--kind object`, for vehicles, machines and
+  props: truer hard-surface shapes, but worse backs on people), giro renders
   the proxy's depth along a camera path it chooses (a spiral rising to 45°, starting at the hero's
   own camera), and Wan 2.2 Fun Control repaints that path with the hero, cut out onto black, as the
   first frame. The cameras are known, so COLMAP only
@@ -210,11 +211,11 @@ including what it says about outputs, before use.
 | [ComfyUI](https://github.com/Comfy-Org/ComfyUI) | Headless inference server (over HTTP) | GPL-3.0 |
 | [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) ([ComfyUI files](https://huggingface.co/Comfy-Org/MiniMax-H3)) | Orbit video (`--model h3`, optional) | [MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) |
 | [MiniMax-H3 360° Orbit LoRA](https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA) | Orbit video (H3 orbit, on by default there) | MiniMax H3 Community License |
-| [Pixal3D](https://huggingface.co/TencentARC/Pixal3D) ([ComfyUI files](https://huggingface.co/Comfy-Org/Pixal3D)) | Proxy mesh (proxy orbit) | MIT |
+| [Pixal3D](https://huggingface.co/TencentARC/Pixal3D) ([ComfyUI files](https://huggingface.co/Comfy-Org/Pixal3D)) | Proxy mesh (proxy orbit, `--kind object`) | MIT |
 | [TRELLIS.2](https://huggingface.co/microsoft/TRELLIS.2-4B) shape and texture VAEs, in Pixal3D's ComfyUI files | Pixal3D's decoders | MIT |
 | [DINOv3](https://github.com/facebookresearch/dinov3) ViT-L, in Pixal3D's ComfyUI files | Pixal3D's image encoder | [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md) |
 | [MoGe-2](https://huggingface.co/Ruicheng/moge-2-vitl-normal) ViT-L | Field of view for Pixal3D | MIT |
-| [TripoSplat](https://github.com/VAST-AI-Research/TripoSplat) ([weights](https://huggingface.co/VAST-AI/TripoSplat)) | Proxy splat (proxy orbit, `-p proxy.model=triposplat`) | MIT |
+| [TripoSplat](https://github.com/VAST-AI-Research/TripoSplat) ([weights](https://huggingface.co/VAST-AI/TripoSplat)) | Proxy splat (proxy orbit, people and characters: the default) | MIT |
 | [DINOv3](https://github.com/facebookresearch/dinov3) ViT-H, bundled with TripoSplat | TripoSplat's image encoder | [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md) |
 | [FLUX.2 autoencoder](https://github.com/black-forest-labs/flux2#flux2-autoencoder), bundled with TripoSplat | TripoSplat's image conditioning | Apache-2.0 |
 | [Wan 2.2 Fun Control A14B](https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-Control) ([ComfyUI files](https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged)) | Orbit video (proxy orbit) | Apache-2.0 |

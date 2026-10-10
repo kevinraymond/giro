@@ -21,19 +21,23 @@ ORBIT = OrbitVideo()
 # the subject in front of a still room into a usable orbit (docs/FINDINGS.md, "Masks").
 PIPELINE: list[Stage] = [ORBIT, Extract(), Dedup(), Masks(), ColmapPoses(), Gate(), Dataset(), Train(),
                          Crop(), Canonicalize(), Export()]
-# The proxy orbit (orbit model "wan22-control"): a 3D proxy of the hero comes first (Pixal3D), its
+# The proxy orbit (orbit model "wan22-control"): a 3D proxy of the hero comes first (PROXY_BY_KIND), its
 # depth along a known camera path drives the video, and the path's cameras are the poses
 # (docs/FINDINGS.md, "Proxy orbit").
 PROXY = Proxy()
 PROXY_MODEL = "wan22-control"
-# What the proxy orbit sets under the user's own per-stage params: Pixal3D's mesh as the proxy (Oct 9,
-# 2026: hard-surface shapes, e.g. the tank's hull, where TripoSplat's was square; board #3744), every frame has a known
-# camera (no dedup), COLMAP refines the path's cameras instead of mapping, the hero, the
+# The proxy model by kind of subject (Oct 9, 2026, board #3814, by eye): Pixal3D's mesh gets hard-surface
+# shapes right (the tank's hull, where TripoSplat's was square, #3744; the scooter's rear) but invents worse
+# backs on people (the adventurer's hood, the knight's back plate), where TripoSplat's are cleaner.
+PROXY_BY_KIND: dict[str, str] = {"person": "triposplat", "object": "pixal3d"}
+DEFAULT_KIND = "person"
+# What the proxy orbit sets under the user's own per-stage params: the default kind's proxy, every
+# frame has a known camera (no dedup), COLMAP refines the path's cameras instead of mapping, the hero, the
 # video's exact first frame and its only real view, counts five times in training, and training
 # keeps up to 150K splats for 60K iterations: its SeedVR2-sharpened frames carry detail an 80K
 # cap throws away (docs/FINDINGS.md, "Proxy orbit").
 PROXY_PARAMS: dict[str, dict] = {
-    "proxy": {"model": "pixal3d"},
+    "proxy": {"model": PROXY_BY_KIND[DEFAULT_KIND]},
     "dedup": {"keep_all": True},
     "poses_colmap": {"mapper": "path"},
     "dataset": {"hero_copies": 5},
@@ -75,5 +79,5 @@ FALLBACK = PoseFallback()
 # poses and gate run again on the filled frames (not part of PIPELINE).
 GAPFILL = GapFill()
 
-__all__ = ["BY_NAME", "DEFAULT_MODEL", "EDIT", "new_orbit", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "PROXY", "PROXY_MODEL", "Cancelled", "Ctx",
+__all__ = ["BY_NAME", "DEFAULT_KIND", "DEFAULT_MODEL", "PROXY_BY_KIND", "EDIT", "new_orbit", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "PROXY", "PROXY_MODEL", "Cancelled", "Ctx",
            "Rejected", "Stage", "StageFailed", "gapfill", "mode_params", "pipeline", "poses"]
