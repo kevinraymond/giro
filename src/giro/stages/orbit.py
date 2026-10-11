@@ -103,6 +103,14 @@ class OrbitVideo(Stage):
     # by plain Wan 2.2 I2V's low-noise expert (workflows.with_handoff); "hero_bg": "black" (default) gives
     # the video the hero cut out by the proxy stage's SAM mask on black (proxy_render/hero_black.png), as the proxy's depth is drawn
     # (no floor or wall to carry around the subject at high angles), "keep" the hero as it is.
+    # "mirror": {"frames" (17), "pin" (true), "min_separation" (30), "min_gate" (0.75)}, the symmetry
+    # prior (board #3822, giro.symmetry): the hero mirrored across the proxy's symmetry plane is the
+    # view from the mirrored camera; the path's first clip goes from the hero to that camera in
+    # `frames` frames at the hero's pitch, the shorter way round, and ends on the mirrored hero (Fun
+    # Control's end_image; "pin": false keeps the path but not the image, the control), the rest of
+    # the turns continue from there. Skipped (the plain path) when the mirrored camera is less than
+    # min_separation degrees from the hero (a hero facing along the plane: the mirror shows the same
+    # side) or the flipped hero mask overlaps the proxy's silhouette there by less than min_gate.
     # With H3 and no "lora" given, the 360 orbit LoRA is used, with the prompt it was trained on
     # in place of giro's stock prompt (docs/FINDINGS.md, "Orbit videos").
     tuned = {"lora": "h3/minimax_h3_flf2v_orbit360_pablodawson_v1.safetensors"}
@@ -113,7 +121,7 @@ class OrbitVideo(Stage):
     # The proxy orbit upscales its frames twice with SeedVR2 unless "upscale" is given (null: off).
     proxy_upscale = {"scale": 2.0}
     extra_params = ("lora", "lora_strength", "lora_low", "model", "clips", "refine", "init", "upscale", "window", "video", "handoff",
-                    "hero_bg", *path_defaults)
+                    "hero_bg", "mirror", *path_defaults)
 
     def inputs_for(self, params: dict[str, Any]) -> tuple[str, ...]:
         if params.get("model") == "wan22-control":
@@ -161,8 +169,10 @@ class OrbitVideo(Stage):
         }
         cameras: dict[str, Any] | None = None
         clips: list[list[campath.PathCamera]] = [[]]
+        mirror: dict[str, Any] | None = None
         if model == "wan22-control":
-            cameras, clips = self._cameras(attempt, params, length)
+            mirror = self._mirror(attempt, params, ctx) if params.get("mirror") else None
+            cameras, clips = self._cameras(attempt, params, length, mirror)
             if text == workflows.ORBIT_PROMPT:
                 wf["prompt"] = workflows.PROXY_ORBIT_PROMPT
             wf |= {"proxy": str((attempt / "proxy" / "proxy.ply").resolve()), "depth_prefix": f"{stamp}/depth"}
@@ -175,6 +185,12 @@ class OrbitVideo(Stage):
                 hero_path = self._video_hero(attempt, params)
                 hero = await comfy.upload_image(hero_path)
                 start = hero
+                mirror_image = None
+                if mirror and mirror["pin"]:
+                    flipped = render_dir / "mirror_hero.png"
+                    render_dir.mkdir(exist_ok=True)
+                    Image.open(hero_path).transpose(Image.Transpose.FLIP_LEFT_RIGHT).save(flipped)
+                    mirror_image = await comfy.upload_image(flipped)
                 n_previews = 0
                 for k, clip in enumerate(clips):
                     # A chained clip starts on the previous clip's last frame (and camera); that
@@ -216,6 +232,10 @@ class OrbitVideo(Stage):
                     if cameras and k == 0 and opts_path(params) == "loop":
                         # The loop comes back to the hero's camera: the hero is its last frame too.
                         prompt["condition"]["inputs"]["end_image"] = ["hero", 0]
+                    if k == 0 and mirror_image and not params.get("init"):
+                        # The first clip ends on the mirrored camera: the hero flipped is its last frame.
+                        prompt["mirror"] = {"class_type": "LoadImage", "inputs": {"image": mirror_image, "upload": "image"}}
+                        prompt["condition"]["inputs"]["end_image"] = ["mirror", 0]
                     if cameras and start != hero and not params.get("init"):
                         prompt["start"] = {"class_type": "LoadImage", "inputs": {"image": start, "upload": "image"}}
                         prompt["condition"]["inputs"]["start_image"] = ["start", 0]
@@ -411,16 +431,51 @@ class OrbitVideo(Stage):
             source.rename(base)
         return size, time.monotonic() - t0
 
-    def _cameras(self, attempt: Path, params: dict[str, Any], length: int
+    @staticmethod
+    def _mirror(attempt: Path, params: dict[str, Any], ctx: Ctx) -> dict[str, Any] | None:
+        """The mirrored hero's camera (giro.symmetry) and whether it is worth a keyframe."""
+        from giro import symmetry
+        from giro.stages.proxy import Points, iou
+
+        spec = {"frames": 17, "pin": True, "min_separation": 30.0, "min_gate": 0.75} | dict(params["mirror"])
+        proxy = json.loads((attempt / "proxy" / "proxy.json").read_text())
+        hero = campath.PathCamera.from_json(proxy["hero_camera"])
+        points = Points(attempt / "proxy" / "proxy.ply")
+        plane = symmetry.plane(points.xyz)
+        cam = symmetry.mirror(hero, plane)
+        mask = np.asarray(Image.open(attempt / "proxy" / "hero_mask.png").convert("L")) > 127
+        gate = iou(np.fliplr(mask), points.silhouette(cam, mask.shape[1], mask.shape[0]))
+        sep = symmetry.separation(hero, cam)
+        info = {"camera": cam.to_json(), "plane": plane.to_json(), "separation": round(sep, 1), "gate_iou": round(gate, 4),
+                "frames": workflows.snap_length(int(spec["frames"]), "wan22"), "pin": bool(spec["pin"])}
+        ctx.log(f"mirror: separation {sep:.0f} deg, gate IoU {gate:.3f}, plane score {plane.score:.4f} (floor {plane.floor:.4f})")
+        if sep < float(spec["min_separation"]) or gate < float(spec["min_gate"]):
+            ctx.log("mirror: skipped (the mirrored hero adds no view here); the plain path")
+            return None
+        ctx.metric("mirror_separation", round(sep, 1))
+        ctx.metric("mirror_gate_iou", round(gate, 4))
+        return info
+
+    def _cameras(self, attempt: Path, params: dict[str, Any], length: int, mirror: dict[str, Any] | None = None
                  ) -> tuple[dict[str, Any], list[list[campath.PathCamera]]]:
         """The proxy orbit's camera path, from the hero camera the proxy stage fitted: the preset's
-        clip, then each of `clips` continuing from where the one before ended. Returns cameras.json
-        (one camera per written frame) and the cameras of each clip."""
+        clip (or with `mirror`, a clip to the mirrored camera, then the rest of the turns), then each
+        of `clips` continuing from where the one before ended. Returns cameras.json (one camera per
+        written frame) and the cameras of each clip."""
         proxy = json.loads((attempt / "proxy" / "proxy.json").read_text())
         hero = campath.PathCamera.from_json(proxy["hero_camera"])
         lo, hi = (np.asarray(b, dtype=float) for b in proxy["bounds"])
         opts = {k: params.get(k, v) for k, v in self.path_defaults.items()}
-        clips = [campath.plan(hero, opts["path"], length, turns=float(opts["turns"]), pitch_end=float(opts["pitch_end"]))]
+        if mirror:
+            cam = campath.PathCamera.from_json(mirror["camera"])
+            delta = (cam.yaw - hero.yaw + 180) % 360 - 180  # the shorter way round
+            n0 = mirror["frames"]
+            first = campath.segment(hero, n0, turns=delta / 360, pitch_end=hero.pitch, distance_end=cam.distance,
+                                    target_end=cam.target)
+            rest = (360 * float(opts["turns"]) - abs(delta)) / 360 * (1 if delta >= 0 else -1)
+            clips = [first, campath.segment(first[-1], length - n0 + 1, turns=rest, pitch_end=float(opts["pitch_end"]))]
+        else:
+            clips = [campath.plan(hero, opts["path"], length, turns=float(opts["turns"]), pitch_end=float(opts["pitch_end"]))]
         for spec in params.get("clips") or []:
             # distance: times the hero's; aim: the target's height above the proxy's middle, in
             # proxy heights (the splat frame's y points down)
@@ -434,4 +489,4 @@ class OrbitVideo(Stage):
         frames = clips[0] + [c for clip in clips[1:] for c in clip[1:]]
         return {"preset": opts["path"], "turns": opts["turns"], "pitch_end": opts["pitch_end"],
                 "clips": params.get("clips") or [], "width": params["width"], "height": params["height"],
-                "hero": hero.to_json(), "frames": [c.to_json() for c in frames]}, clips
+                "hero": hero.to_json(), "frames": [c.to_json() for c in frames]} | ({"mirror": mirror} if mirror else {}), clips

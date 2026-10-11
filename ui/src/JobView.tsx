@@ -122,6 +122,7 @@ function BestResult({ job, seed }: { job: Job; seed: number }) {
           <a className="btn" href={fileUrl(job.id, `${base}/splat.spz`, version)} download={`${jobName(job.id)}.spz`}>SPZ</a>
           <a className="btn" href={fileUrl(job.id, `${base}/splat.sog`, version)} download={`${jobName(job.id)}.sog`}>SOG</a>
           <a className="btn" href={fileUrl(job.id, `${base}/splat.ply`, version)} download={`${jobName(job.id)}.ply`}>PLY</a>
+          <a className="btn" href={fileUrl(job.id, `${base}/splat.html`, version)} download={`${jobName(job.id)}.html`} title="All-in-one viewer: open anywhere, measure">HTML</a>
         </div>
         <a className="btn primary" href={`#/job/${encodeURIComponent(job.id)}/${seed}`}>Open</a>
       </div>

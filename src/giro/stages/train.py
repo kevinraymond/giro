@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -26,8 +27,9 @@ REFINE_LINE = re.compile(r"Refine iter (\d+), (\d+) splats")
 LOADED_LINE = re.compile(r"Loaded dataset with (\d+) training, (\d+) eval views")
 
 
-def _write_with_copies(model_txt: Path, sparse: Path, extra: list[str]) -> None:
-    """The COLMAP model as text, with `extra` images at the hero's pose and camera."""
+def _write_with_copies(model_txt: Path, sparse: Path, extra: list[str], mirror: tuple[str, list[str]] | None = None) -> None:
+    """The COLMAP model as text, with `extra` images at the hero's pose and camera, and `mirror`'s
+    images (frame, names) at that frame's pose with the hero's camera."""
     for f in ("cameras.txt", "points3D.txt"):
         (sparse / f).symlink_to((model_txt / f).resolve())
     lines = [ln for ln in (model_txt / "images.txt").read_text().splitlines() if not ln.startswith("#")]
@@ -39,6 +41,10 @@ def _write_with_copies(model_txt: Path, sparse: Path, extra: list[str]) -> None:
             f.write(f"{header}\n{points}\n")
         for k, name in enumerate(extra):
             f.write(f"{next_id + k} {' '.join(hero[1:9])} {name}\n\n")
+        if mirror:
+            frame = next(h.split() for h, _ in pairs if h.split()[9] == mirror[0])
+            for k, name in enumerate(mirror[1]):
+                f.write(f"{next_id + len(extra) + k} {' '.join(frame[1:8])} {hero[8]} {name}\n\n")
 
 
 class Dataset(Stage):
@@ -50,8 +56,11 @@ class Dataset(Stage):
     # mask_erode_px: SAM masks run a pixel or two into the background; eroded, that sliver
     # trains as background instead of as a pale rim around the subject.
     defaults = {"eval_split_every": 8, "masks": True, "mask_erode_px": 2}
-    # Also read: "hero_copies" (default 1), how many times the hero is trained on (the proxy orbit: 5).
-    extra_params = ("hero_copies",)
+    # Also read: "hero_copies" (default 1), how many times the hero is trained on (the proxy orbit: 5);
+    # "mirror_copies" (default 0): with orbit_video's "mirror" pinned (cameras.json "mirror"), the hero
+    # flipped left to right is trained on that many times at the mirrored camera (the pinned frame's
+    # pose, the hero's camera), as frames/<frame>_mirror<k>.png, beside that frame (board #3822).
+    extra_params = ("hero_copies", "mirror_copies")
     inputs = ("poses/colmap/model",)
     outputs = ("dataset",)
 
@@ -69,40 +78,58 @@ class Dataset(Stage):
         model_txt = attempt / "poses" / "colmap" / "model_txt"
         registered = sorted(read_images_txt(model_txt / "images.txt"))
         copies = int(params.get("hero_copies", 1))
-        if copies > 1 and "hero/hero.png" in registered:
+        mirror = self._mirror(attempt, registered, int(params.get("mirror_copies", 0)))
+        if (copies > 1 or mirror) and "hero/hero.png" in registered:
             # Brush has no per-image weight: the hero (sharper than the frames, and the only real
             # view) counts `copies` times. Copies sort right after the hero, as hero/hero_2.png, ...
             extra = [f"hero/hero_{k}.png" for k in range(2, copies + 1)]
-            registered = sorted(registered + extra)
-            _write_with_copies(model_txt, sparse, extra)
+            registered = sorted(registered + extra + (mirror[1] if mirror else []))
+            _write_with_copies(model_txt, sparse, extra, mirror)
         else:
+            mirror = None
             extra = []
             for f in model.iterdir():
                 (sparse / f.name).symlink_to(f)
         # Brush sorts views by name and holds out every Nth index starting at 0. The hero (and
-        # its copies) sort last; while one would land on an eval index, leave out the frame
-        # before them so the hero is always trained on.
+        # its copies) sort last, the mirrored hero's copies right after their frame; while one
+        # would land on an eval index, leave out the frame before its run of copies so the
+        # hero and its mirror are always trained on.
         split = params["eval_split_every"]
         skipped: list[str] = []
         names = list(registered)
-        while split and any(names.index(h) % split == 0 for h in names if h.startswith("hero/")):
-            first_hero = min(names.index(h) for h in names if h.startswith("hero/"))
-            if first_hero == 0:
+        kept = set(extra) | {"hero/hero.png"} | set(mirror[1] if mirror else [])
+        if split and max(len(extra) + 1, len(mirror[1]) if mirror else 0) >= split:
+            raise StageFailed(f"{split} or more copies of the hero or its mirror in a row always hit one of Brush's "
+                              f"eval indices (every {split}th); use fewer copies")
+        while split and (bad := [i for i, n in enumerate(names) if n in kept and i % split == 0]):
+            first = bad[0]
+            while first > 0 and names[first - 1] in kept:
+                first -= 1
+            if first == 0:
                 break
-            skipped.append(names.pop(first_hero - 1))
+            skipped.append(names.pop(first - 1))
         for name in registered:
             if name in skipped:
                 continue
-            source = "hero/hero.png" if name in extra else name
+            flip = bool(mirror and name in mirror[1])
+            source = "hero/hero.png" if name in extra or flip else name
             dest = out / "images" / name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.symlink_to((attempt / source).resolve())
+            if flip:
+                Image.open(attempt / source).transpose(Image.Transpose.FLIP_LEFT_RIGHT).save(dest)
+            else:
+                dest.symlink_to((attempt / source).resolve())
             if params["masks"]:
                 mask = attempt / "masks" / source
                 if not mask.exists():
                     raise StageFailed(f"masks is on but masks/{name} is missing; run the masks stage")
                 (out / "masks" / name).parent.mkdir(parents=True, exist_ok=True)
-                if params["mask_erode_px"]:
+                if flip:
+                    m = np.fliplr(np.asarray(Image.open(mask)) > 127)
+                    if params["mask_erode_px"]:
+                        m = ndimage.binary_erosion(m, iterations=params["mask_erode_px"])
+                    Image.fromarray(m.astype(np.uint8) * 255, "L").save(out / "masks" / name)
+                elif params["mask_erode_px"]:
                     m = ndimage.binary_erosion(np.asarray(Image.open(mask)) > 127, iterations=params["mask_erode_px"])
                     Image.fromarray(m.astype(np.uint8) * 255, "L").save(out / "masks" / name)
                 else:
@@ -114,6 +141,20 @@ class Dataset(Stage):
             ctx.log(f"left out {', '.join(skipped)} so the hero is not held out for eval")
         if extra:
             ctx.metric("hero_copies", copies)
+        if mirror:
+            ctx.metric("mirror_copies", len(mirror[1]))
+
+    @staticmethod
+    def _mirror(attempt: Path, registered: list[str], copies: int) -> tuple[str, list[str]] | None:
+        """The pinned mirror frame's name and the flipped hero's copies, when there are any."""
+        cams = attempt / "cameras.json"
+        if copies < 1 or not cams.exists():
+            return None
+        m = json.loads(cams.read_text()).get("mirror")
+        frame = f"frames/{m['frames'] - 1:05d}.png" if m and m.get("pin") else None
+        if frame not in registered:
+            return None
+        return frame, [f"{frame[:-4]}_mirror{k}.png" for k in range(1, copies + 1)]
 
 
 class Train(Stage):
