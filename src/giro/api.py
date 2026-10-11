@@ -57,7 +57,7 @@ MAX_UPLOAD = 64 * 2**20
 # Artifacts an attempt may have, relative to its directory, in pipeline order.
 ARTIFACTS = [
     "hero/hero.png", "video.mp4", "gate.json", "crop/preview_hero.jpg", "canonical/turnaround.jpg",
-    "canonical/transform.json", "export/splat.ply", "export/splat.sog", "export/splat.spz", "export/splat.vr.sog",
+    "canonical/transform.json", "export/splat.ply", "export/splat.sog", "export/splat.spz", "export/splat.html", "export/splat.vr.sog",
 ]
 
 

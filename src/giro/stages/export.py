@@ -3,6 +3,7 @@
 - splat.ply   master copy, full SH (INRIA PLY, the canonical frame)
 - splat.sog   compressed, for the web viewer
 - splat.spz   SPZ v3: Spark (2.3.1 too) rejects the v4 that splat-transform writes by default
+- splat.html  all-in-one viewer: the SPZ inside one HTML file, with measuring (giro.viewer_html)
 
 `box` (min and max corners in meters, in the canonical frame: y up, feet at 0) trims
 what the auto-crop left, e.g. a stand or a stray patch of floor; it never rescales.
@@ -18,13 +19,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from giro import render, splat
+from giro import render, splat, viewer_html
 from giro.stages.base import Ctx, Stage, StageFailed
 
 
 class Export(Stage):
     name = "export"
-    defaults = {"formats": ["sog", "spz"], "vr_budget": 150_000, "box": None}
+    defaults = {"formats": ["sog", "spz", "html"], "vr_budget": 150_000, "box": None}
     inputs = ("canonical/splat.ply",)
     outputs = ("export/splat.ply",)
 
@@ -48,8 +49,17 @@ class Export(Stage):
         ctx.metric("vr_budget", params["vr_budget"])
         ctx.metric("within_vr_budget", n <= params["vr_budget"])
 
-        for i, fmt in enumerate(params["formats"]):
-            ctx.progress(i / (len(params["formats"]) + 1), f"writing {fmt}")
+        formats = [f for f in params["formats"] if f != "html"]
+        if "html" in params["formats"]:  # the page wraps the SPZ, so that comes first
+            formats = [f for f in formats if f != "spz"] + ["spz", "html"]
+        for i, fmt in enumerate(formats):
+            ctx.progress(i / (len(formats) + 1), f"writing {fmt}")
+            if fmt == "html":
+                try:
+                    viewer_html.write_standalone(out / "splat.spz", out / "splat.html", attempt.parent.name)
+                except viewer_html.ViewerNotBuilt as e:
+                    raise StageFailed(str(e)) from e
+                continue
             extra = ["--spz-version", "3"] if fmt == "spz" else []
             render.splat_transform(str(master), str(out / f"splat.{fmt}"), *extra, gpu=ctx.gpu)
         if n > params["vr_budget"]:

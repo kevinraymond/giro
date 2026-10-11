@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #14171c; color: #e6e8eb; font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #view { position: absolute; inset: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+  #labels { position: absolute; inset: 0; pointer-events: none; }
+  .label { position: absolute; transform: translate(-50%, -140%); background: rgba(20, 23, 28, .85); color: #ffb020; padding: 2px 6px; border-radius: 4px; font-weight: 600; white-space: nowrap; }
+  #bar { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; pointer-events: none; }
+  #bar > * { pointer-events: auto; }
+  #title { font-weight: 600; margin-right: 8px; }
+  button { background: #262b33; color: #e6e8eb; border: 1px solid #3a4048; border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  button:hover { background: #30363f; }
+  button.on { background: #ffb020; color: #14171c; border-color: #ffb020; }
+  button[disabled] { opacity: .4; cursor: default; }
+  #status { margin-left: auto; opacity: .75; }
+  #panel { position: absolute; left: 12px; bottom: 12px; max-width: 360px; background: rgba(20, 23, 28, .85); border: 1px solid #3a4048; border-radius: 8px; padding: 8px 10px; }
+  #panel.hidden { display: none; }
+  .row { display: grid; grid-template-columns: 1.5em 6em 1fr; gap: 8px; align-items: baseline; }
+  .row .dims { opacity: .7; font-size: 12px; }
+  #notes { position: absolute; right: 12px; bottom: 12px; max-width: 420px; opacity: .7; font-size: 12px; text-align: right; }
+  #help { position: absolute; inset: 0; background: rgba(0, 0, 0, .6); display: flex; align-items: center; justify-content: center; }
+  #help.hidden { display: none; }
+  #help > div { background: #1c2027; border: 1px solid #3a4048; border-radius: 10px; padding: 18px 22px; max-width: 460px; }
+  #help h2 { margin: 0 0 8px; font-size: 16px; }
+  #help dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0; }
+  #help dt { font-weight: 600; white-space: nowrap; }
+  #help dd { margin: 0; opacity: .85; }
+  kbd { background: #262b33; border: 1px solid #3a4048; border-radius: 4px; padding: 0 5px; font: 12px monospace; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="labels"></div>
+<div id="bar">
+  <span id="title">{{TITLE}}</span>
+  <button id="measure" title="Measure (M): click two points on the splat">Measure</button>
+  <button id="clear" disabled>Clear</button>
+  <button id="units" title="Units (U)">m</button>
+  <button id="reset" title="Reset view (R)">Reset view</button>
+  <button id="helpbtn" title="Help (?)">?</button>
+  <span id="status"></span>
+</div>
+<div id="panel" class="hidden"><div id="measures"></div></div>
+<div id="notes"></div>
+<div id="help" class="hidden"><div>
+  <h2>Moving around</h2>
+  <dl>
+    <dt>Drag</dt><dd>orbit · right-drag pans · wheel zooms</dd>
+    <dt>Double-click</dt><dd>orbit around that point</dd>
+    <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> <kbd>Q</kbd><kbd>E</kbd></dt><dd>fly (hold <kbd>Shift</kbd> for faster)</dd>
+    <dt><kbd>R</kbd></dt><dd>reset the view</dd>
+    <dt><kbd>G</kbd></dt><dd>show or hide the 1 m floor grid</dd>
+  </dl>
+  <h2 style="margin-top:14px">Measuring</h2>
+  <dl>
+    <dt><kbd>M</kbd></dt><dd>measure mode: click two points on the splat for the distance between them</dd>
+    <dt><kbd>U</kbd></dt><dd>meters or feet and inches</dd>
+    <dt><kbd>Esc</kbd></dt><dd>leave measure mode</dd>
+  </dl>
+  <p style="opacity:.7;margin:12px 0 0">Everything is inside this one file; nothing is downloaded.</p>
+</div></div>
+<script id="giro-meta" type="application/json">{{META}}</script>
+<script id="giro-splat" type="application/octet-stream">{{SPLAT_B64}}</script>
+<script>{{VIEWER_JS}}</script>
+</body>
+</html>

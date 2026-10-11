@@ -73,7 +73,8 @@ because it covered only 182° and jumped 169° in one step.
 
 **Export job** saves the whole job as one zip to share or archive: an offline HTML report with
 each good seed's result, orbit, cameras, training curve and numbers, plus its splat as PLY, SOG
-and SPZ.
+and SPZ, and as one self-contained HTML page (the SPZ inside, nothing fetched) that anyone can
+open to walk around the splat and measure it.
 
 <img src="docs/images/job.webp" alt="Job page: One more orbit and Export job in the header, best result viewer on top, two seed cards below, one passed and one rejected with reasons" width="900">
 
