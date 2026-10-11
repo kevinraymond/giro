@@ -21,6 +21,7 @@ export interface Attempt {
 
 export interface JobSpec {
   image: string;
+  video?: string | null; // video in: the orbit video or frames directory the job is built on
   want: number;
   max_attempts: number;
   seeds: number[];
@@ -142,9 +143,12 @@ const attemptUrl = (job: string, seed: number) => `/api/jobs/${encodeURIComponen
 export const api = {
   stages: () => call<StageInfo[]>("GET", "/api/stages"),
   job: (id: string) => call<Job & { running: boolean; elsewhere: boolean }>("GET", `/api/jobs/${encodeURIComponent(id)}`),
-  createJob: (image: File, spec: Record<string, unknown>) => {
+  // An image, or (video in) a video or the frames of one, with an image as the hero if given.
+  createJob: (source: { image?: File; video?: File; frames?: File[] }, spec: Record<string, unknown>) => {
     const form = new FormData();
-    form.append("image", image);
+    if (source.image) form.append("image", source.image);
+    if (source.video) form.append("video", source.video);
+    for (const f of source.frames ?? []) form.append("frames", f);
     form.append("spec", JSON.stringify(spec));
     return call<Job>("POST", "/api/jobs", form);
   },

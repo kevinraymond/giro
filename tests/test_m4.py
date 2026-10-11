@@ -402,3 +402,69 @@ def test_orbit_and_edit_stages_talk_to_comfy_end_to_end(tmp_path, monkeypatch):
     quality = _FakeComfy.prompts[-1]
     assert "lightning" not in quality and quality["sampler"]["inputs"]["model"] == ["cfgnorm", 0]
     assert quality["sampler"]["inputs"]["steps"] == 40 and quality["positive"]["inputs"]["prompt"] == "studio backdrop"
+
+
+class _VideoIn(Stage):
+    """Video in, faked: the job's video copy is the seed's video.mp4, shaped like _Orbit's."""
+    name = "orbit_video"
+    defaults = {"source": None}
+    outputs = ("video.mp4",)
+
+    def run(self, attempt, params, ctx):
+        RUNS.append((params["seed"], self.name))
+        assert Path(params["source"]).exists(), params
+        (attempt / "video.mp4").write_text(str(params["seed"]))
+
+
+def _mp4(n: int = 12) -> bytes:
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(n):
+            Image.new("RGB", (64, 48), (20 * i, 90, 160)).save(Path(tmp) / f"{i:03d}.png")
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-framerate", "16", "-i", f"{tmp}/%03d.png",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", f"{tmp}/v.mp4"], check=True)
+        return (Path(tmp) / "v.mp4").read_bytes()
+
+
+def test_a_video_job_runs_one_attempt_on_the_users_video(client, monkeypatch):
+    monkeypatch.setattr(stages, "VIDEO_IN", _VideoIn())
+    r = client.post("/api/jobs", files={"video": ("my orbit.mp4", _mp4(), "video/mp4")},
+                    data={"spec": json.dumps({"seeds": [2]})})
+    assert r.status_code == 201, r.text
+    job = r.json()
+    assert job["id"].endswith("my-orbit")
+    assert (job["spec"]["want"], job["spec"]["max_attempts"]) == (1, 1)
+    assert job["spec"]["orbit"]["model"] == "video"
+    assert (job["spec"]["orbit"]["width"], job["spec"]["orbit"]["height"]) == (64, 48)
+    assert Path(job["spec"]["video"]).name == "video.mp4"
+    with Image.open(job["spec"]["image"]) as im:  # the hero is the first frame
+        assert (im.width, im.height) == (64, 48)
+    job = _wait(client, job["id"])
+    assert job["status"] == "done" and job["ranking"] == [2]
+    assert [s for seed, s in RUNS if seed == 2] == ["orbit_video", "gate", "train", "crop"]
+    # No edit on a video job: the video would not follow.
+    r = client.post(f"/api/jobs/{job['id']}/edit", json={"prompt": "a studio"})
+    assert r.status_code == 409
+
+
+def test_a_video_job_from_frames_with_its_own_hero(client, monkeypatch):
+    monkeypatch.setattr(stages, "VIDEO_IN", _VideoIn())
+    frames = [("frames", (f"shot_{i:03d}.png", _png(), "image/png")) for i in range(10)]
+    r = client.post("/api/jobs", files=[("image", ("hero.png", _png(), "image/png")), *frames],
+                    data={"spec": json.dumps({"seeds": [4, 6], "want": 2, "max_attempts": 2})})
+    assert r.status_code == 201, r.text
+    job = r.json()
+    assert job["id"].endswith("shot")
+    assert (job["spec"]["want"], job["spec"]["max_attempts"]) == (2, 2)
+    assert Path(job["spec"]["video"]).name == "frames"
+    assert len(list(Path(job["spec"]["video"]).glob("*.png"))) == 10
+    job = _wait(client, job["id"])
+    assert job["status"] == "done" and len(job["ranking"]) == 2
+
+
+def test_a_job_needs_an_image_a_video_or_frames(client):
+    r = client.post("/api/jobs", data={"spec": "{}"})
+    assert r.status_code == 422
+    r = client.post("/api/jobs", files={"video": ("x.mp4", b"not a video", "video/mp4")}, data={"spec": "{}"})
+    assert r.status_code == 422 and "not a video" in r.text

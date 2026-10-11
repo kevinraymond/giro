@@ -10,6 +10,20 @@ interface Picked {
   height: number;
 }
 
+// Video in: the user's own orbit, a video or the frames of one (PNG from ComfyUI: no second compression).
+interface PickedVideo {
+  video?: File;
+  frames?: File[];
+  url: string; // the video, or the first frame
+  width: number;
+  height: number;
+  count?: number; // frames, when known
+  label: string;
+}
+
+const isImage = (f: File) => f.type.startsWith("image/");
+const isVideo = (f: File) => f.type.startsWith("video/") || /\.(mp4|mov|webm|mkv|m4v)$/i.test(f.name);
+
 const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
 
 // Video shapes. Only 3:4 at 768x1024 has been tested end to end (docs/FINDINGS.md, "Orbit videos").
@@ -77,6 +91,7 @@ function cropRegion(base: { width: number; height: number }, v: View) {
 export function NewJob() {
   const [stages, setStages] = useState<StageInfo[] | null>(null);
   const [picked, setPicked] = useState<Picked | null>(null);
+  const [orbitIn, setOrbitIn] = useState<PickedVideo | null>(null); // video in: replaces the generated orbits
   const [dragging, setDragging] = useState(false);
   const [name, setName] = useState("");
   const [height, setHeight] = useState("1.7");
@@ -107,6 +122,14 @@ export function NewJob() {
   useEffect(() => () => {
     if (picked) URL.revokeObjectURL(picked.url);
   }, [picked]);
+  useEffect(() => () => {
+    if (orbitIn) URL.revokeObjectURL(orbitIn.url);
+  }, [orbitIn]);
+  // One orbit is one attempt: the seeds would only re-map and retrain the same video.
+  useEffect(() => {
+    setWant(orbitIn ? 1 : 3);
+    setMaxAttempts(orbitIn ? 1 : 6);
+  }, [orbitIn === null]);
 
   const defaults = (stage: string) => stages?.find((s) => s.name === stage)?.defaults ?? {};
   const orbit = defaults("orbit_video");
@@ -156,9 +179,11 @@ export function NewJob() {
     target.addEventListener("pointerup", up);
   }
 
+  const slug = (s: string) => s.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 64);
+
   function pick(file: File | undefined) {
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
+    if (!isImage(file)) {
       setError(`${file.name} is not an image`);
       return;
     }
@@ -167,13 +192,54 @@ export function NewJob() {
     const img = new Image();
     img.onload = () => {
       setPicked({ file, url, width: img.naturalWidth, height: img.naturalHeight });
-      if (!name) setName(file.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 64));
+      if (!name) setName(slug(file.name));
     };
     img.onerror = () => setError(`The browser cannot read ${file.name}`);
     img.src = url;
   }
 
+  // The drop or file dialog: one image is the hero; one video, or several images, is the orbit itself.
+  function pickAny(files: FileList | File[] | null | undefined) {
+    const list = Array.from(files ?? []);
+    if (list.length === 0) return;
+    if (list.length === 1 && isVideo(list[0])) return pickVideo(list[0]);
+    if (list.length > 1 && list.every(isImage)) return pickFrames(list);
+    if (list.length === 1) return pick(list[0]);
+    setError("Drop one image (the hero), one orbit video, or the frames of one (several images)");
+  }
+
+  function pickVideo(file: File) {
+    setError(null);
+    const url = URL.createObjectURL(file);
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.onloadedmetadata = () => {
+      setOrbitIn({ video: file, url, width: v.videoWidth, height: v.videoHeight, label: `${file.name}, ${v.duration.toFixed(1)} s` });
+      if (!name) setName(slug(file.name));
+    };
+    v.onerror = () => {
+      // No preview, but the server decodes with ffmpeg (HEVC MOV from a phone, for one); size read there.
+      setOrbitIn({ video: file, url, width: 0, height: 0, label: `${file.name} (no preview in this browser)` });
+      if (!name) setName(slug(file.name));
+    };
+    v.src = url;
+  }
+
+  function pickFrames(files: File[]) {
+    setError(null);
+    const frames = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    const url = URL.createObjectURL(frames[0]);
+    const img = new Image();
+    img.onload = () => {
+      setOrbitIn({ frames, url, width: img.naturalWidth, height: img.naturalHeight, count: frames.length, label: `${frames.length} frames, ${frames[0].name} …` });
+      if (!name) setName(slug(frames[0].name).replace(/[-_]?\d+$/, "") || "frames");
+    };
+    img.onerror = () => setError(`The browser cannot read ${frames[0].name}`);
+    img.src = url;
+  }
+
   async function submit() {
+    if (orbitIn) return submitVideo();
     if (!picked) return;
     setBusy(true);
     setError(null);
@@ -193,7 +259,7 @@ export function NewJob() {
     }
     const editing = editOn && editPrompt.trim() !== "";
     try {
-      let job = await api.createJob(picked.file, {
+      let job = await api.createJob({ image: picked.file }, {
         start: !editing,
         name: name || undefined,
         want,
@@ -215,6 +281,28 @@ export function NewJob() {
     }
   }
 
+  // Video in: the orbit is given, so no video settings, no crop, no edit; the hero is the first frame unless given.
+  async function submitVideo() {
+    if (!orbitIn) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const job = await api.createJob({ video: orbitIn.video, frames: orbitIn.frames, image: picked?.file }, {
+        name: name || undefined,
+        want,
+        max_attempts: Math.max(want, maxAttempts),
+        height_m: height ? Number(height) : undefined,
+        subject: subject || undefined,
+        seeds: seeds.split(/[\s,]+/).filter(Boolean).map(Number),
+      });
+      putJob(job);
+      go("job", job.id);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+
   // The kept region in image pixels: zooming in past the video's resolution adds no detail.
   const keptW = picked && crop ? Math.round(picked.width * crop.width) : 0;
   const keptH = picked && crop ? Math.round(picked.height * crop.height) : 0;
@@ -225,13 +313,14 @@ export function NewJob() {
         <h1>New job</h1>
         <p className="muted">
           One image of a subject in, a cropped and upright Gaussian splat out. giro generates several orbit videos,
-          keeps the ones whose cameras check out, and ranks them.
+          keeps the ones whose cameras check out, and ranks them. Or bring an orbit video you already have.
         </p>
       </header>
 
       <div className="newjob-grid">
         <div
-          className={`dropzone ${dragging ? "over" : ""} ${picked ? "has" : ""}`}
+          className={`dropzone ${dragging ? "over" : ""} ${picked || orbitIn ? "has" : ""}`}
+          style={orbitIn && orbitIn.width > 0 ? { aspectRatio: `${orbitIn.width} / ${orbitIn.height}` } : undefined}
           onClick={() => input.current?.click()}
           onDragOver={(e) => {
             e.preventDefault();
@@ -241,14 +330,20 @@ export function NewJob() {
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            pick(e.dataTransfer.files[0]);
+            pickAny(e.dataTransfer.files);
           }}
           role="button"
           tabIndex={0}
           onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && input.current?.click()}
         >
-          <input ref={input} type="file" accept="image/*" hidden onChange={(e) => pick(e.target.files?.[0])} />
-          {picked ? (
+          <input ref={input} type="file" accept="image/*,video/*,.mov,.mp4,.m4v,.webm,.mkv" multiple hidden onChange={(e) => pickAny(e.target.files)} />
+          {orbitIn ? (
+            <div className="hero-preview">
+              {orbitIn.width === 0 ? (
+                <div className="dropzone-empty"><strong>{orbitIn.video?.name}</strong><span className="muted">This browser cannot play it; giro reads it with ffmpeg.</span></div>
+              ) : orbitIn.video ? <video src={orbitIn.url} muted loop autoPlay playsInline /> : <img src={orbitIn.url} alt="" draggable={false} />}
+            </div>
+          ) : picked ? (
             <div className="hero-preview" ref={preview}>
               <img src={picked.url} alt="" draggable={false} />
               {crop && <div
@@ -269,12 +364,42 @@ export function NewJob() {
               </svg>
               <strong>Drop an image here</strong>
               <span className="muted">or click to choose one. One subject, fully in frame, works best.</span>
+              <span className="muted">Or drop an orbit video you already have (or its frames as PNGs) to train on that.</span>
             </div>
           )}
         </div>
 
         <div className="form">
-          {picked && crop && (
+          {orbitIn && (
+            <div className="checks">
+              <div className="check-row">
+                <span className="muted">Your orbit</span>
+                <span>{orbitIn.label}</span>
+              </div>
+              <div className="check-row">
+                <span className="muted">Frames</span>
+                <span>{orbitIn.width > 0 ? `${orbitIn.width} × ${orbitIn.height}${orbitIn.width > 1536 || orbitIn.height > 1536 ? " (scaled to 1536 on the long side)" : ""}` : "read on the server"}</span>
+              </div>
+              <div className="check-row">
+                <span className="muted">Hero view</span>
+                <span>
+                  {picked ? picked.file.name : "the first frame"}
+                  {" "}
+                  <label className="btn small" style={{ cursor: "pointer" }}>
+                    {picked ? "Change" : "Use an image"}
+                    <input type="file" accept="image/*" hidden onChange={(e) => pick(e.target.files?.[0])} />
+                  </label>
+                  {picked && <button className="btn small" onClick={() => setPicked(null)}>First frame</button>}
+                </span>
+              </div>
+              <p className="note good">
+                No video is generated: the frames go straight to COLMAP for the cameras, the gate checks the ring, and
+                Brush trains with the hero view counted once. Slow, steady orbits around one centered subject work best.
+                <button className="btn small" style={{ marginLeft: 8 }} onClick={(e) => { e.preventDefault(); setOrbitIn(null); }}>Remove</button>
+              </p>
+            </div>
+          )}
+          {!orbitIn && picked && crop && (
             <div className="checks">
               <div className="check-row">
                 <span className="muted">Image</span>
@@ -310,9 +435,9 @@ export function NewJob() {
               )}
             </div>
           )}
-          {picked && !crop && <p className="note bad">The video size must be multiples of 32 from 256 to 2048.</p>}
+          {!orbitIn && picked && !crop && <p className="note bad">The video size must be multiples of 32 from 256 to 2048.</p>}
 
-          <label className="field">
+          {!orbitIn && <label className="field">
             <span>Orbit</span>
             <select value={mode} onChange={(e) => {
               const m = e.target.value as "h3" | "proxy";
@@ -327,8 +452,8 @@ export function NewJob() {
                 ? "Keeps the hero's look around the subject a little better, but MiniMax H3's license excludes users in the US, EU, UK and South Korea."
                 : "A rough 3D proxy of the subject sets the camera path, so the views from above are real. As good as H3 or better on the hero view, sharper, and its models allow commercial use everywhere."}
             </small>
-          </label>
-          {mode === "proxy" && (
+          </label>}
+          {!orbitIn && mode === "proxy" && (
             <label className="field">
               <span>Subject</span>
               <select value={kind} onChange={(e) => setKind(e.target.value as "person" | "object")}>
@@ -342,7 +467,7 @@ export function NewJob() {
               </small>
             </label>
           )}
-          <div className="field-row">
+          {!orbitIn && <div className="field-row">
             <label className="field">
               <span>Video shape</span>
               <select value={shape} onChange={(e) => setShape(e.target.value)}>
@@ -372,8 +497,8 @@ export function NewJob() {
                 </select>
               </label>
             )}
-          </div>
-          {mode === "h3" && (vw * vh !== TESTED_PX || vw / vh !== 3 / 4) && sizeOk && (
+          </div>}
+          {!orbitIn && mode === "h3" && (vw * vh !== TESTED_PX || vw / vh !== 3 / 4) && sizeOk && (
             <p className="note warn">
               Only 3:4 at 768 × 1024 has been tested.
               {vw * vh > TESTED_PX * 1.05 ? " A larger video may not fit in 24 GB of GPU memory." : ""}
@@ -394,14 +519,14 @@ export function NewJob() {
               <small className="muted">Sets the real-world size of the export.</small>
             </label>
             <label className="field">
-              <span>Good orbits wanted</span>
+              <span>{orbitIn ? "Trainings wanted" : "Good orbits wanted"}</span>
               <input type="number" min={1} max={12} value={want} onChange={(e) => setWant(Number(e.target.value))} />
-              <small className="muted">About {mode === "proxy" ? 20 : 15} min of GPU each.</small>
+              <small className="muted">{orbitIn ? "One is enough: every seed maps and trains the same video." : `About ${mode === "proxy" ? 20 : 15} min of GPU each.`}</small>
             </label>
             <label className="field">
               <span>Seeds at most</span>
               <input type="number" min={want} max={32} value={Math.max(want, maxAttempts)} onChange={(e) => setMaxAttempts(Number(e.target.value))} />
-              <small className="muted">Rejected videos are rerolled up to this.</small>
+              <small className="muted">{orbitIn ? "A rejected mapping is retried up to this." : "Rejected videos are rerolled up to this."}</small>
             </label>
           </div>
           <label className="field">
@@ -417,7 +542,7 @@ export function NewJob() {
               "{h.said}" keeps only one match per frame, a different one from frame to frame. Write "{h.fix}" to keep {h.fix.split(":").pop()}.
             </p>
           ))}
-          <details className="advanced">
+          {!orbitIn && <details className="advanced">
             <summary>Video settings</summary>
             <div className="field-row">
               <label className="field">
@@ -445,9 +570,9 @@ export function NewJob() {
                 <input value={seeds} onChange={(e) => setSeeds(e.target.value)} placeholder="random" />
               </label>
             </div>
-          </details>
+          </details>}
 
-          <div className="edit-first">
+          {!orbitIn && <div className="edit-first">
             <label className="switch">
               <input type="checkbox" checked={editOn} onChange={(e) => setEditOn(e.target.checked)} />
               <span>Change the background first</span>
@@ -462,11 +587,11 @@ export function NewJob() {
                 </small>
               </label>
             )}
-          </div>
+          </div>}
 
           {error && <p className="note bad">{error}</p>}
-          <button className="btn primary big" disabled={!picked || !sizeOk || busy || (editOn && !editPrompt.trim())} onClick={submit}>
-            {busy ? "Starting…" : editOn ? "Edit and review" : `Start ${want} orbit${want > 1 ? "s" : ""}`}
+          <button className="btn primary big" disabled={orbitIn ? busy : !picked || !sizeOk || busy || (editOn && !editPrompt.trim())} onClick={submit}>
+            {busy ? "Starting…" : orbitIn ? "Train from the video" : editOn ? "Edit and review" : `Start ${want} orbit${want > 1 ? "s" : ""}`}
           </button>
         </div>
       </div>

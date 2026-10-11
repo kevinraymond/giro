@@ -159,15 +159,21 @@ class Manager:
             self.index.put_job(job.data())
         return job
 
-    def create_job(self, image: bytes, filename: str, spec: JobSpec, name: str | None = None,
-                   start: bool = True) -> Job:
+    def create_job(self, image: bytes | None, filename: str, spec: JobSpec, name: str | None = None,
+                   start: bool = True, video: Path | None = None) -> Job:
+        """A job from an uploaded image, or (video in) from an uploaded video or frames directory at
+        `video`, with the image as its hero if there is one. Job.create copies both; the uploads
+        are the caller's to remove."""
         with tempfile.TemporaryDirectory(prefix="giro-upload-") as tmp:
-            path = Path(tmp) / (Path(filename).name or "image.png")
-            path.write_bytes(image)
-            spec.image = str(path)
+            if image is not None:
+                path = Path(tmp) / (Path(filename).name or "image.png")
+                path.write_bytes(image)
+                spec.image = str(path)
+            else:
+                spec.image = ""
+            spec.video = str(video) if video is not None else None
             job = Job.create(self.root, spec, name)
-        # The upload is gone; the job's own copy is the image from now on.
-        job.spec.image = str((job.path / "input" / "source.png").resolve())
+        # The uploads are gone; the job's own copies are the inputs from now on (Job.create set them).
         self._attach(job)
         if not start:
             job.status = "draft"
@@ -191,6 +197,8 @@ class Manager:
     def edit(self, job_id: str, prompt: str, seed: int | None, fast: bool) -> None:
         """Edit a draft job's image (background swap); the result is input/edited.png."""
         job = self.job(job_id)
+        if job.spec.video:
+            raise ActionError("a job built on a video cannot edit its image: the video would not change with it")
         if job.status != "draft":
             raise ActionError("edit the image before starting the orbits")
         if job.edit.get("status") == "running":

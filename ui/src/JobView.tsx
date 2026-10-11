@@ -48,6 +48,7 @@ export function JobView({ jobId }: { jobId: string }) {
             </span>
             {height !== undefined && <span className="muted">· {String(height)} m tall</span>}
             {job.spec.use_edit && <span className="muted" title={job.edit.prompt}>· edited image</span>}
+            {job.spec.video && <span className="muted" title={job.spec.video}>· from your video</span>}
             <span className="muted">· {ago(job.created)}</span>
           </div>
         </div>
