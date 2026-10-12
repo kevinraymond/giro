@@ -32,6 +32,7 @@ from typing import Any
 from giro import stages
 from giro.comfy import server
 from giro.scheduler import GpuPool
+from giro.stages import video_in
 from giro.stages.orbit import prepare_hero
 
 TERMINAL = {"passed", "rejected", "error", "discarded"}
@@ -51,6 +52,9 @@ class JobSpec:
     post_gpus: list[int] = field(default_factory=lambda: [0, 1])
     use_edit: bool = False  # orbit input/edited.png (the edit stage's output) instead of source.png
     crop: list[float] | None = None  # region of the image the hero keeps, (left, top, right, bottom) in 0-1; None: centered
+    # Video in: the orbit video (or frames directory) the job is built on, in place of generated orbits;
+    # the job's own copy under input/ once created. `image` is then the hero, the first frame unless given.
+    video: str | None = None
 
 
 @dataclass
@@ -93,15 +97,26 @@ class Job:
 
     @classmethod
     def create(cls, root: Path, spec: JobSpec, name: str | None = None) -> Job:
-        image = Path(spec.image)
-        job_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{name or image.stem}"
+        image = Path(spec.image) if spec.image else None
+        video = Path(spec.video) if spec.video else None
+        job_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{name or (image or video).stem}"  # type: ignore[union-attr]
         path = root / job_id
         for n in itertools.count(2):  # two jobs for one image in the same second
             if not path.exists():
                 break
             path = root / f"{job_id}-{n}"
         (path / "input").mkdir(parents=True)
-        shutil.copyfile(image, path / "input" / "source.png")
+        if video is not None:
+            # The job's own copy of the orbit: a frames directory as it is, a video with its own suffix.
+            copy = path / "input" / ("frames" if video.is_dir() else f"video{video.suffix.lower() or '.mp4'}")
+            (shutil.copytree if video.is_dir() else shutil.copyfile)(video, copy)
+            spec.video = str(copy.resolve())
+            spec.orbit = spec.orbit | video_in.orbit_params(copy)  # the model, the source and the frames' size
+            if image is None:
+                video_in.first_frame(copy, path / "input" / "source.png")
+        if image is not None:
+            shutil.copyfile(image, path / "input" / "source.png")
+        spec.image = str((path / "input" / "source.png").resolve())
         job = cls(path, spec)
         job.save()
         return job
@@ -321,6 +336,7 @@ class Runner:
         )
         model = orbit.get("model")
         proxy_mode = model == stages.PROXY_MODEL
+        video_mode = model == stages.VIDEO_MODEL  # the user's video: nothing to regenerate a gap with
         restart = True
         fallback_tried = False  # for the current COLMAP reconstruction
         while restart:  # once more after a pose fallback or gap fill; unchanged stages skip themselves
@@ -328,7 +344,7 @@ class Runner:
             for order, stage in enumerate(stages.pipeline(model)):
                 attempt.stage = stage.name
                 job.save()
-                if stage is stages.ORBIT:
+                if stage.name == stages.ORBIT.name:
                     params = spec.orbit | {"seed": attempt.seed}
                 else:
                     params = stages.mode_params(model, stage.name) | attempt.stage_params(spec, stage.name)
@@ -338,7 +354,7 @@ class Runner:
                     # A stage that will skip itself needs no GPU: a rerun after new params does not
                     # wait behind other attempts' videos for stages it reuses.
                     if stage.gpu_mb and not await asyncio.to_thread(stage.is_current, path, params):
-                        prefs = spec.video_gpus if stage is stages.ORBIT else spec.post_gpus
+                        prefs = spec.video_gpus if stage.name == stages.ORBIT.name else spec.post_gpus
                         ran = await self._execute_leased(attempt, stage, path, params, ctx, prefs, -order)
                     else:
                         ctx.gpu = None
@@ -362,7 +378,7 @@ class Runner:
                             elif not fallback_tried:
                                 fallback_tried = True
                                 restart = await self._try_fallback(attempt, path, ctx, -order)
-                            if not restart:
+                            if not restart and not video_mode:
                                 restart = await self._fill_gaps(attempt, path, ctx, -order)
                         except stages.Cancelled:
                             attempt.status = "discarded" if attempt.seed in self._stop else "cancelled"

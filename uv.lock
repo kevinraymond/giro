@@ -396,6 +396,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "fastapi" },
+    { name = "huggingface-hub" },
     { name = "numpy" },
     { name = "pillow" },
     { name = "python-multipart" },
@@ -422,6 +423,7 @@ eval = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "huggingface-hub", specifier = ">=1.33.0" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "python-multipart", specifier = ">=0.0.32" },

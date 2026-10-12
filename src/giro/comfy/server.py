@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import signal
 import subprocess
 import time
@@ -26,6 +27,32 @@ ROOT = Path(__file__).resolve().parents[3]
 COMFY_DIR = Path(os.environ["GIRO_COMFY_DIR"]).resolve() if os.environ.get("GIRO_COMFY_DIR") else ROOT / "vendor" / "comfyui"
 MODEL_PATHS = ROOT / "scripts" / "extra_model_paths.yaml"
 RUN_DIR = ROOT / "data" / "run"
+
+
+def model_paths() -> Path:
+    """The extra-model-paths file ComfyUI gets: scripts/extra_model_paths.yaml as it is, or with
+    the store's base_path replaced by GIRO_MODELS (what a container mounts), written under
+    data/run. Relative base_paths (the custom nodes') are relative to scripts/, so the copy
+    makes them absolute."""
+    if not os.environ.get("GIRO_MODELS"):
+        return MODEL_PATHS
+    out_lines = []
+    section = ""
+    for line in MODEL_PATHS.read_text().splitlines():
+        if re.match(r"^\w", line):
+            section = line.split(":")[0]
+        m = re.match(r"^(\s*base_path:\s*)(\S+)(.*)$", line)
+        if m:
+            value = os.environ["GIRO_MODELS"] if section == "giro_models" else m.group(2)
+            if not value.startswith(("/", "~")):
+                value = str((MODEL_PATHS.parent / value).resolve())
+            line = m.group(1) + value + m.group(3)
+        out_lines.append(line)
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    out = RUN_DIR / "extra_model_paths.yaml"
+    out.write_text("\n".join(out_lines) + "\n")
+    return out
+
 
 PORTS = {1: 8190, 0: 8191}
 
@@ -58,7 +85,7 @@ def start(gpu: int, timeout: float = 120.0) -> str:
         [
             str(COMFY_DIR / ".venv" / "bin" / "python"), "main.py",
             "--listen", "127.0.0.1", "--port", str(PORTS[gpu]),
-            "--extra-model-paths-config", str(MODEL_PATHS),
+            "--extra-model-paths-config", str(model_paths()),
             "--preview-method", "latent2rgb", "--preview-size", "1024",
             "--disable-auto-launch",
             # GIRO_COMFY_SAGE=1: SageAttention kernels (scripts/comfy-lock.txt). Wan 1.5x and H3 1.3x

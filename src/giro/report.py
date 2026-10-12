@@ -238,7 +238,11 @@ def build(job: Job, out: Path) -> Path:
         other_rows = "".join(
             f'<tr><td>{a.seed}</td><td>{html.escape(a.status)}</td><td>{html.escape(a.stage)}</td>'
             f'<td>{html.escape(a.reason)}</td></tr>' for a in others)
-        settings = [("Video", f'{orbit.get("width", 768)} × {orbit.get("height", 1024)}, {orbit.get("length", 158)} frames'),
+        if spec.video:
+            video_setting = f'{Path(spec.video).name} (video in), frames {orbit.get("width", "?")} × {orbit.get("height", "?")}'
+        else:
+            video_setting = f'{orbit.get("width", 768)} × {orbit.get("height", 1024)}, {orbit.get("length", 158)} frames'
+        settings = [("Video", video_setting),
                     ("What to keep", spec.params.get("masks", {}).get("subject_prompt", "main subject, held object:2")),
                     ("Subject height", f'{spec.params.get("canonicalize", {}).get("height_m", 1.7)} m'),
                     ("Background edit", (job.edit or {}).get("prompt", "") if spec.use_edit else "none"),

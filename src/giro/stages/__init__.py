@@ -14,6 +14,8 @@ from giro.stages.orbit import OrbitVideo
 from giro.stages.poses import ColmapPoses
 from giro.stages.proxy import Proxy
 from giro.stages.train import Dataset, Train
+from giro.stages import video_in
+from giro.stages.video_in import VideoIn
 
 # Every stage of an attempt in order; the orbit video comes first.
 ORBIT = OrbitVideo()
@@ -44,6 +46,10 @@ PROXY_PARAMS: dict[str, dict] = {
     "train": {"max_splats": 150_000, "total_train_iters": 60_000},
 }
 BY_NAME: dict[str, Stage] = {s.name: s for s in [PROXY, *PIPELINE]}
+# Video in (orbit model "video"): the user's own orbit video or frames stand in for the generated
+# orbit (giro.stages.video_in); the rest runs like an H3 orbit: COLMAP maps, the gate checks the ring.
+VIDEO_IN = VideoIn()
+VIDEO_MODEL = video_in.MODEL
 
 
 # The orbit model new jobs get (Oct 4, 2026: the proxy orbit; docs/FINDINGS.md, "Proxy orbit").
@@ -62,8 +68,12 @@ def new_orbit(orbit: dict) -> dict:
 
 
 def pipeline(model: str | None) -> list[Stage]:
-    """The stages of an attempt whose orbit video comes from `model` (None: H3)."""
-    return [PROXY, *PIPELINE] if model == PROXY_MODEL else PIPELINE
+    """The stages of an attempt whose orbit video comes from `model` (None: H3; "video": the user's)."""
+    if model == PROXY_MODEL:
+        return [PROXY, *PIPELINE]
+    if model == VIDEO_MODEL:
+        return [VIDEO_IN, *PIPELINE[1:]]
+    return PIPELINE
 
 
 def mode_params(model: str | None, stage: str) -> dict:
@@ -79,5 +89,5 @@ FALLBACK = PoseFallback()
 # poses and gate run again on the filled frames (not part of PIPELINE).
 GAPFILL = GapFill()
 
-__all__ = ["BY_NAME", "DEFAULT_KIND", "DEFAULT_MODEL", "PROXY_BY_KIND", "EDIT", "new_orbit", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "PROXY", "PROXY_MODEL", "Cancelled", "Ctx",
-           "Rejected", "Stage", "StageFailed", "gapfill", "mode_params", "pipeline", "poses"]
+__all__ = ["BY_NAME", "DEFAULT_KIND", "DEFAULT_MODEL", "PROXY_BY_KIND", "EDIT", "new_orbit", "FALLBACK", "GAPFILL", "ORBIT", "PIPELINE", "PROXY", "PROXY_MODEL", "VIDEO_IN", "VIDEO_MODEL", "Cancelled", "Ctx",
+           "Rejected", "Stage", "StageFailed", "gapfill", "mode_params", "pipeline", "poses", "video_in"]

@@ -1,0 +1,11 @@
+# The image builds from the source tree only: no data, no vendored tools (built inside), no local venvs.
+.git
+data/
+vendor/
+.venv/
+ui/node_modules/
+ui/dist/
+**/__pycache__/
+*.pyc
+docs/images/
+scratch/

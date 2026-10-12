@@ -1,7 +1,8 @@
 """giro's HTTP and WebSocket API, served by `giro serve`.
 
     GET  /api/jobs                                  every job, newest first
-    POST /api/jobs                                  multipart: image + spec (JSON) -> the new job, started
+    POST /api/jobs                                  multipart: image, or video / frames[] (video in, the image
+                                                    as hero if given) + spec (JSON) -> the new job, started
                                                     (or a draft with spec.start = false)
     GET  /api/jobs/{id}                             job.json
     POST /api/jobs/{id}/edit           {prompt, seed?, fast}   draft jobs: background edit -> input/edited.png
@@ -34,6 +35,8 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
+import tempfile
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -53,6 +56,8 @@ from giro.manager import ActionError, Manager
 
 UI_DIST = Path(__file__).resolve().parents[2] / "ui" / "dist"
 MAX_UPLOAD = 64 * 2**20
+MAX_VIDEO_UPLOAD = 4 * 2**30  # a phone's 4K clip; streamed to disk, never held in memory
+MAX_FRAMES_UPLOAD = 2000
 
 # Artifacts an attempt may have, relative to its directory, in pipeline order.
 ARTIFACTS = [
@@ -159,16 +164,34 @@ def create_app(root: Path, db: Path, gpus: list[int]) -> FastAPI:
     async def list_jobs() -> list[dict[str, Any]]:
         return [manager.jobs[j].data() for j in sorted(manager.jobs, reverse=True)]
 
-    @app.post("/api/jobs", status_code=201)
-    async def create_job(image: UploadFile = File(...), spec: str = Form("{}")) -> dict[str, Any]:
-        data = await image.read(MAX_UPLOAD + 1)
+    async def read_image(upload: UploadFile) -> bytes:
+        data = await upload.read(MAX_UPLOAD + 1)
         if len(data) > MAX_UPLOAD:
-            raise HTTPException(413, f"image larger than {MAX_UPLOAD // 2**20} MB")
+            raise HTTPException(413, f"{upload.filename or 'image'} is larger than {MAX_UPLOAD // 2**20} MB")
         try:
             with Image.open(io.BytesIO(data)) as im:
                 im.verify()
         except (UnidentifiedImageError, OSError):
-            raise HTTPException(422, "not an image giro can read") from None
+            raise HTTPException(422, f"{upload.filename or 'the upload'} is not an image giro can read") from None
+        return data
+
+    async def save_upload(upload: UploadFile, path: Path, limit: int) -> None:
+        size = 0
+        with open(path, "wb") as f:
+            while chunk := await upload.read(2**20):
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(413, f"{upload.filename or path.name} is larger than {limit // 2**20} MB")
+                f.write(chunk)
+
+    @app.post("/api/jobs", status_code=201)
+    async def create_job(image: UploadFile | None = File(None), video: UploadFile | None = File(None),
+                         frames: list[UploadFile] = File([]), spec: str = Form("{}")) -> dict[str, Any]:
+        if image is None and video is None and not frames:
+            raise HTTPException(422, "an image, a video or frames are required")
+        if video is not None and frames:
+            raise HTTPException(422, "send a video or frames, not both")
+        data = await read_image(image) if image is not None else None
         try:
             request = NewJob.model_validate(json.loads(spec))
             job_spec = request.spec()
@@ -177,8 +200,39 @@ def create_app(root: Path, db: Path, gpus: list[int]) -> FastAPI:
         bad = set(job_spec.video_gpus + job_spec.post_gpus) - set(manager.pool.gpus)
         if bad:
             raise HTTPException(422, f"GPUs {sorted(bad)} are not in the server's pool {list(manager.pool.gpus)}")
-        name = request.name or Path(image.filename or "image").stem[:64] or "image"
-        job = manager.create_job(data, image.filename or "image.png", job_spec, name, start=request.start)
+        if video is None and not frames:
+            assert image is not None
+            name = request.name or Path(image.filename or "image").stem[:64] or "image"
+            job = manager.create_job(data, image.filename or "image.png", job_spec, name, start=request.start)
+            return job.data()
+        # Video in: the upload goes to disk, Job.create copies it; one orbit is one attempt unless asked.
+        if "want" not in request.model_fields_set:
+            job_spec.want = 1
+        if "max_attempts" not in request.model_fields_set:
+            job_spec.max_attempts = 1
+        job_spec.max_attempts = max(job_spec.max_attempts, job_spec.want)
+        job_spec.orbit = {"model": stages.VIDEO_MODEL}  # the generated orbits' settings do not apply
+        with tempfile.TemporaryDirectory(prefix="giro-upload-") as tmp:
+            if video is not None:
+                source = Path(tmp) / f"video{Path(video.filename or '').suffix.lower() or '.mp4'}"
+                await save_upload(video, source, MAX_VIDEO_UPLOAD)
+                stem = Path(video.filename or "video").stem
+            else:
+                if len(frames) > MAX_FRAMES_UPLOAD:
+                    raise HTTPException(413, f"more than {MAX_FRAMES_UPLOAD} frames")
+                source = Path(tmp) / "frames"
+                source.mkdir()
+                for i, frame in enumerate(frames):  # in the order sent; named so that order sorts
+                    suffix = Path(frame.filename or "").suffix.lower() or ".png"
+                    (source / f"{i:05d}{suffix}").write_bytes(await read_image(frame))
+                stem = Path(frames[0].filename or "frames").stem.rstrip("0123456789_-") or "frames"
+            try:
+                stages.video_in.probe(source)
+            except ValueError as e:
+                raise HTTPException(422, str(e)) from None
+            name = request.name or re.sub(r"[^A-Za-z0-9_.-]+", "-", stem)[:64].strip("-") or "video"
+            job = manager.create_job(data, (image.filename if image else None) or "hero.png", job_spec, name,
+                                     start=request.start, video=source)
         return job.data()
 
     @app.post("/api/jobs/{job_id}/edit")

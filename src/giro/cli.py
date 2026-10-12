@@ -10,10 +10,11 @@ import sys
 import time
 from pathlib import Path
 
-from giro import gpu, report, stages, workflows
+from giro import gpu, models, report, stages, workflows
 from giro import path as campath
 from giro.comfy import server
 from giro.job import Job, JobSpec, Runner, describe
+from giro.stages import video_in
 from giro.stages.orbit import ORBIT_VRAM_MB, prepare_hero
 
 JOBS_DIR = Path(__file__).resolve().parents[2] / "data" / "jobs"
@@ -81,9 +82,17 @@ def _attempt_model(attempt: Path) -> str | None:
 
 def _prepare_attempt(args: argparse.Namespace) -> dict[str, object]:
     """Hero and orbit params for a single attempt directory (`orbit` and `run`)."""
-    orbit = _orbit_params(args)
+    video = getattr(args, "video", None)
+    if video is not None:
+        # Video in: the user's orbit; the hero is their image, or the video's first frame.
+        orbit = video_in.orbit_params(video)
+        image = args.image or video_in.first_frame(video, args.out / "input" / "source.png")
+    else:
+        if args.image is None:
+            raise SystemExit("giro: an image is required (or --video)")
+        orbit, image = _orbit_params(args), args.image
     width, height = int(orbit["width"]), int(orbit["height"])  # type: ignore[call-overload]
-    cropped = prepare_hero(args.image, args.out, width, height)
+    cropped = prepare_hero(image, args.out, width, height)
     if cropped > 0.01:
         _log(f"warning: hero cropped to {width}:{height}, {cropped:.0%} of the image removed")
     seed = args.seed
@@ -114,7 +123,7 @@ def run_stages(args: argparse.Namespace, first_params: dict[str, object] | None 
     ctx = _cli_ctx(getattr(args, "gpu", None))
     for stage in pipeline[first:last]:
         t0 = time.monotonic()
-        stage_params = (((first_params or {}) if stage is stages.ORBIT else stages.mode_params(model, stage.name))
+        stage_params = (((first_params or {}) if stage.name == stages.ORBIT.name else stages.mode_params(model, stage.name))
                         | (params.get(stage.name) or {}))
         try:
             ran = stage.execute(attempt, stage_params, ctx, force=args.force)
@@ -152,9 +161,15 @@ def job_cmd(args: argparse.Namespace) -> int:
         print(describe(Job.load(args.job)))
         return 0
     if args.action == "start":
+        if args.image is None and args.video is None:
+            raise SystemExit("giro job start: an image is required (or --video)")
+        # One video is one orbit: the seeds only re-map and retrain it, so one attempt unless asked.
+        video = args.video is not None
         spec = JobSpec(
-            image=str(args.image.resolve()), want=args.want, max_attempts=args.max_attempts,
-            seeds=args.seeds, orbit=_orbit_params(args), params=_stage_params(args),
+            image=str(args.image.resolve()) if args.image else "", video=str(args.video.resolve()) if video else None,
+            want=args.want if args.want is not None else (1 if video else 3),
+            max_attempts=args.max_attempts if args.max_attempts is not None else (1 if video else 6),
+            seeds=args.seeds, orbit={} if video else _orbit_params(args), params=_stage_params(args),
             video_gpus=args.video_gpus, post_gpus=args.post_gpus,
         )
         job = Job.create(args.root, spec, args.name)
@@ -181,6 +196,19 @@ def job_cmd(args: argparse.Namespace) -> int:
     log(f"job {job.status} in {(time.monotonic() - t0) / 60:.1f} min")
     print(describe(job))
     return 0 if job.status == "done" else 1
+
+
+def models_cmd(args: argparse.Namespace) -> int:
+    root = args.store or models.store()
+    if args.action == "list":
+        print(models.describe(root))
+        return 0
+    groups = list(models.ALL_GROUPS) if args.all else (args.group or list(models.DEFAULT_GROUPS))
+    models.fetch(groups, root, log=_log)
+    left = models.missing(groups, root)
+    if left:
+        _log(f"still missing: {', '.join(w.path for w in left)}")
+    return 1 if left else 0
 
 
 def serve_cmd(args: argparse.Namespace) -> int:
@@ -275,8 +303,14 @@ def main(argv: list[str] | None = None) -> int:
                        help=f"proxy orbit: the subject's kind, which picks the proxy model (default {stages.DEFAULT_KIND}: "
                             + ", ".join(f"{k} {m}" for k, m in stages.PROXY_BY_KIND.items()) + ")")
 
-    def attempt_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("image", type=Path)
+    def video_in_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--video", type=Path, metavar="VIDEO_OR_DIR",
+                       help="video in: your own orbit video, or a directory of its frames (PNG/JPEG), instead of a "
+                            "generated one; IMAGE is then the hero view (default: the first frame). No proxy, no "
+                            "video model: COLMAP maps the cameras and the gate checks the ring, as with --model h3")
+
+    def attempt_args(p: argparse.ArgumentParser, optional_image: bool = False) -> None:
+        p.add_argument("image", type=Path, **({"nargs": "?"} if optional_image else {}))
         p.add_argument("-o", "--out", type=Path, required=True, help="attempt directory")
         p.add_argument("--seed", type=int)
         p.add_argument("--gpu", type=int, choices=sorted(server.PORTS))
@@ -287,8 +321,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=orbit)
 
     names = [st.name for st in stages.pipeline(stages.PROXY_MODEL)]
-    e = sub.add_parser("run", help="one seed from image to trained splat, in one attempt directory")
-    attempt_args(e)
+    e = sub.add_parser("run", help="one seed from image (or --video) to trained splat, in one attempt directory")
+    attempt_args(e, optional_image=True)
+    video_in_arg(e)
     e.add_argument("-p", "--param", action="append", default=[], metavar="STAGE.KEY=VALUE")
     subject_args(e)
     e.set_defaults(func=run_all)
@@ -305,10 +340,11 @@ def main(argv: list[str] | None = None) -> int:
 
     j = sub.add_parser("job", help="several seeds per image: gate, reroll, rank, both GPUs")
     jsub = j.add_subparsers(dest="action", required=True)
-    js = jsub.add_parser("start", help="start a job for an image")
-    js.add_argument("image", type=Path)
-    js.add_argument("-n", "--want", type=int, default=3, help="passing attempts to aim for")
-    js.add_argument("--max-attempts", type=int, default=6, help="seeds to try at most, rerolls included")
+    js = jsub.add_parser("start", help="start a job for an image (or --video)")
+    js.add_argument("image", type=Path, nargs="?")
+    video_in_arg(js)
+    js.add_argument("-n", "--want", type=int, help="passing attempts to aim for (default 3; 1 with --video)")
+    js.add_argument("--max-attempts", type=int, help="seeds to try at most, rerolls included (default 6; 1 with --video)")
     js.add_argument("--seeds", type=_int_list, default=[], help="comma-separated seeds to try first")
     js.add_argument("--video-gpus", type=_int_list, default=[1], help="GPUs for video generation (default 1)")
     js.add_argument("--post-gpus", type=_int_list, default=[0, 1], help="GPUs for poses and training, preferred first")
@@ -339,6 +375,17 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--db", type=Path, default=JOBS_DIR.parent / "giro.sqlite")
     sv.add_argument("--gpus", type=_int_list, default=[0, 1], help="GPUs the server may use (default 0,1)")
     sv.set_defaults(func=serve_cmd)
+
+    mo = sub.add_parser("models", help="the model weights: what the store holds, and fetch what is missing")
+    mo.add_argument("--store", type=Path, help="the weights' directory (default: $GIRO_MODELS, else scripts/extra_model_paths.yaml)")
+    mosub = mo.add_subparsers(dest="action", required=True)
+    ml = mosub.add_parser("list", help="every weight giro can use, present or missing, with its license")
+    ml.set_defaults(func=models_cmd)
+    mf = mosub.add_parser("fetch", help=f"download missing weights from Hugging Face (default groups: {', '.join(models.DEFAULT_GROUPS)})")
+    mf.add_argument("-g", "--group", action="append", default=[], choices=sorted(models.GROUPS),
+                    help="; ".join(f"{g}: {what}" for g, what in models.GROUPS.items()))
+    mf.add_argument("--all", action="store_true", help=f"every group but h3 ({', '.join(models.ALL_GROUPS)})")
+    mf.set_defaults(func=models_cmd)
 
     c = sub.add_parser("comfy", help="manage giro's ComfyUI instances")
     c.add_argument("action", choices=["up", "down", "status"])

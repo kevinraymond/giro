@@ -58,3 +58,18 @@ check:
 # build the UI into ui/dist, which giro serve serves
 ui:
     cd ui && npm run build
+
+image_name := "ghcr.io/kevinraymond/giro"
+
+# build the container image (the first build compiles COLMAP and Brush: about an hour)
+image tag="latest":
+    docker build -t {{image_name}}:{{tag}} .
+
+# run the image on every GPU, with the models store and ./data mounted
+image-run tag="latest" models="~/models":
+    docker run --rm -it --gpus all -p {{port}}:8470 -p {{https_port}}:8443 \
+        -v {{models}}:/models -v "$PWD/data":/app/data {{image_name}}:{{tag}}
+
+# push a built image to GitHub Container Registry (docker login ghcr.io first)
+image-push tag="latest":
+    docker push {{image_name}}:{{tag}}
