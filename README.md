@@ -164,7 +164,8 @@ giro is shared to read and learn from. It is not packaged for easy installation.
 - Linux with a 24 GB NVIDIA GPU: the proxy orbit's steps run one after another on one card, about
   20 minutes per seed. The H3 orbit's video alone peaks at about 22 GB, so it wants a second card.
 - Python 3.12 with [uv](https://docs.astral.sh/uv/), Node.js, Rust, FFmpeg, and COLMAP 4.x with CUDA.
-- The model weights, which you supply (see [Third-party software and models](#third-party-software-and-models)).
+- The model weights, which `giro models fetch` downloads from Hugging Face into a store of your
+  choosing (see [Third-party software and models](#third-party-software-and-models) for the licenses).
 
 ```bash
 uv sync
@@ -172,9 +173,14 @@ scripts/setup_comfy.sh                  # pinned headless ComfyUI in vendor/
 scripts/setup_brush.sh                  # pinned Brush
 scripts/setup_splat_transform.sh        # pinned splat-transform
 scripts/setup_da3.sh                    # optional pose fallback (Depth Anything 3)
-# point scripts/extra_model_paths.yaml at your models; the orbit LoRA goes in
-# loras/h3/minimax_h3_flf2v_orbit360_pablodawson_v1.safetensors (or pass -p orbit_video.lora=null)
 cd ui && npm ci && npm run build && cd ..
+
+# the weights: ~60 GB for the default route and the background edit, into
+# scripts/extra_model_paths.yaml's base_path (~/models) or $GIRO_MODELS
+uv run giro models list                 # every weight, present or missing, with its license
+uv run giro models fetch                # the proxy orbit and the edit (groups proxy, edit)
+uv run giro models fetch --all          # also Wan 2.2 I2V, TRELLIS.2 and Depth Anything 3
+uv run giro models fetch -g h3          # MiniMax H3 and its orbit LoRA: only where its license allows
 
 uv run giro serve                       # UI on http://<host>:8470
 uv run giro run image.png -o data/try1 --gpu 0  # or one seed from the CLI (the proxy orbit)
@@ -182,6 +188,27 @@ uv run giro run image.png -o data/try2 --model h3          # MiniMax H3 instead
 uv run giro run --video orbit.mp4 -o data/try3              # your own orbit video (or a directory of frames)
 uv run giro job export data/jobs/<job>  # a job as one zip: offline HTML report + PLY/SOG/SPZ
 ```
+
+### Running it with Docker
+
+The image holds the code and the runtime (CUDA 13, the pinned ComfyUI, COLMAP with CUDA, Brush,
+splat-transform, the UI). The weights stay outside it, on a volume at `/models`, and jobs at
+`/app/data`. You need Docker or Podman with the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+and an NVIDIA driver of 580 or newer (CUDA 13).
+
+```bash
+docker pull ghcr.io/kevinraymond/giro             # or: docker build -t ghcr.io/kevinraymond/giro .
+docker run --rm --gpus all -v ~/models:/models ghcr.io/kevinraymond/giro models fetch   # once, ~60 GB
+docker run --rm --gpus all -p 8470:8470 -p 8443:8443 \
+  -v ~/models:/models -v ./data:/app/data ghcr.io/kevinraymond/giro       # the UI on http://localhost:8470
+docker compose up -d                                                      # the same, from compose.yaml
+```
+
+With Podman, replace `--gpus all` by `--device nvidia.com/gpu=all` (CDI). Any argument after the
+image name is a giro subcommand: `models list`, `run --video orbit.mp4 -o data/try1`, `job show`.
+The container runs as user 1000, so the files it writes into `./data` are yours. The pose fallback
+(Depth Anything 3) is not in the image.
 
 `just check` lints and runs the tests. Outputs go to `data/`, which git ignores.
 `uv run --group eval scripts/evaluate.py OUT ATTEMPT...` scores finished attempts (hero view,

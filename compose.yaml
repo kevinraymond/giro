@@ -1,0 +1,23 @@
+# docker compose up -d   (Podman: podman compose up -d, with CDI set up for the GPU)
+# The weights go on the `models` volume, or point MODELS at a directory you already have.
+services:
+  giro:
+    image: ghcr.io/kevinraymond/giro:latest
+    build: .
+    ports:
+      - "8470:8470"
+      - "8443:8443"   # HTTPS, for the WebXR page on a headset
+    volumes:
+      - ${MODELS:-giro-models}:/models
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  giro-models:

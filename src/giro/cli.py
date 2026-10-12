@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from giro import gpu, report, stages, workflows
+from giro import gpu, models, report, stages, workflows
 from giro import path as campath
 from giro.comfy import server
 from giro.job import Job, JobSpec, Runner, describe
@@ -198,6 +198,19 @@ def job_cmd(args: argparse.Namespace) -> int:
     return 0 if job.status == "done" else 1
 
 
+def models_cmd(args: argparse.Namespace) -> int:
+    root = args.store or models.store()
+    if args.action == "list":
+        print(models.describe(root))
+        return 0
+    groups = list(models.ALL_GROUPS) if args.all else (args.group or list(models.DEFAULT_GROUPS))
+    models.fetch(groups, root, log=_log)
+    left = models.missing(groups, root)
+    if left:
+        _log(f"still missing: {', '.join(w.path for w in left)}")
+    return 1 if left else 0
+
+
 def serve_cmd(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -362,6 +375,17 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--db", type=Path, default=JOBS_DIR.parent / "giro.sqlite")
     sv.add_argument("--gpus", type=_int_list, default=[0, 1], help="GPUs the server may use (default 0,1)")
     sv.set_defaults(func=serve_cmd)
+
+    mo = sub.add_parser("models", help="the model weights: what the store holds, and fetch what is missing")
+    mo.add_argument("--store", type=Path, help="the weights' directory (default: $GIRO_MODELS, else scripts/extra_model_paths.yaml)")
+    mosub = mo.add_subparsers(dest="action", required=True)
+    ml = mosub.add_parser("list", help="every weight giro can use, present or missing, with its license")
+    ml.set_defaults(func=models_cmd)
+    mf = mosub.add_parser("fetch", help=f"download missing weights from Hugging Face (default groups: {', '.join(models.DEFAULT_GROUPS)})")
+    mf.add_argument("-g", "--group", action="append", default=[], choices=sorted(models.GROUPS),
+                    help="; ".join(f"{g}: {what}" for g, what in models.GROUPS.items()))
+    mf.add_argument("--all", action="store_true", help=f"every group but h3 ({', '.join(models.ALL_GROUPS)})")
+    mf.set_defaults(func=models_cmd)
 
     c = sub.add_parser("comfy", help="manage giro's ComfyUI instances")
     c.add_argument("action", choices=["up", "down", "status"])
