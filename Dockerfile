@@ -99,6 +99,19 @@ COPY --chown=giro:giro ui/standalone/template.html ui/standalone/template.html
 ENV GIRO_MODELS=/models HF_HOME=/models/hf PATH=/app/.venv/bin:$PATH \
     NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 VOLUME ["/models", "/app/data"]
+ARG CUDA_VERSION
+ARG UBUNTU_VERSION
+# OCI labels: GitHub links the package to the repository through image.source. version and
+# base.name override the labels the CUDA base image carries (Ubuntu's).
+LABEL org.opencontainers.image.source="https://github.com/kevinraymond/giro" \
+      org.opencontainers.image.url="https://github.com/kevinraymond/giro" \
+      org.opencontainers.image.documentation="https://github.com/kevinraymond/giro#running-it-with-docker" \
+      org.opencontainers.image.title="giro" \
+      org.opencontainers.image.description="Single image to orbit video to cropped, VR-ready Gaussian splat (the weights mount at /models)" \
+      org.opencontainers.image.licenses="MIT AND GPL-3.0-or-later" \
+      org.opencontainers.image.authors="Kevin Raymond" \
+      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.base.name="docker.io/nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}"
 EXPOSE 8470 8443
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["serve"]
