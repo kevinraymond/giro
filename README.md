@@ -25,7 +25,7 @@ COLMAP and a trainer, then delete the room by hand.
 <!-- regenerate with: uv run scripts/pipeline_diagram.py -->
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/pipeline-dark.svg">
-  <img src="docs/images/pipeline-light.svg" alt="Pipeline: one image, optionally background-edited, goes into a per-seed loop of orbit video, frames, masks, poses (COLMAP, with a Depth Anything 3 fallback) and a gate. A missing arc goes to gap fill and back to masks; a failure rerolls a new seed; a pass goes on to train, crop, upright and scale, and the exported splat." width="1000">
+  <img src="docs/images/pipeline-light.svg" alt="Pipeline, drawn as an orbit: one image, optionally background-edited with Qwen, starts an orbit video (the proxy orbit, MiniMax H3, or your own), then frames, masks (SAM 3.1), poses (COLMAP) and a gate that checks the ring. One missing arc goes to gap fill and back to masks; a failure starts a new seed; a pass leaves the orbit for train (Brush, with the hero view), crop, upright and scale, and the exported splat (SPZ, SOG, PLY, HTML)." width="900">
 </picture>
 
 The **gate** is the core idea. It checks the recovered camera ring: at least 330° of sweep,
